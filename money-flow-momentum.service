@@ -1,0 +1,22 @@
+[Unit]
+Description=Money Flow Momentum - Bybit V5 Trading Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/Money-flow-momentum
+ExecStart=/home/ubuntu/Money-flow-momentum/venv/bin/python run_bot.py run
+Restart=on-failure
+RestartSec=10
+Environment=PATH=/home/ubuntu/Money-flow-momentum/venv/bin
+Environment=PYTHONUNBUFFERED=1
+
+# Logging
+StandardOutput=append:/home/ubuntu/Money-flow-momentum/logs/bot.log
+StandardError=append:/home/ubuntu/Money-flow-momentum/logs/bot.log
+
+[Install]
+WantedBy=multi-user.target

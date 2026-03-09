@@ -1,0 +1,91 @@
+# Money Flow Momentum - Bybit V5 Trading Bot Config
+# Copy to config.yaml and customize
+
+mode: paper  # dry_run | paper | live
+
+exchange:
+  testnet: true
+  one_way_mode: true
+  default_leverage: 5
+  request_timeout: 10.0
+  ws_ping_interval: 20.0
+  ws_reconnect_delay: 5.0
+  max_reconnect_attempts: 10
+  rate_limit_requests_per_second: 5.0
+
+universe:
+  min_24h_turnover_usdt: 1000000
+  max_spread_bps: 50
+  min_notional_usdt: 100
+  allowlist: []   # e.g. ["BTCUSDT", "ETHUSDT"]
+  blocklist: []   # e.g. ["LUNAUSDT"]
+  status_filter: Trading
+  quote_coin: USDT
+
+features:
+  window_30s: 30
+  window_1m: 60
+  window_3m: 180
+  window_5m: 300
+  atr_period: 14
+  volatility_window: 60
+
+score_weights:
+  w1_delta_1m: 0.25
+  w2_cvd_slope_3m: 0.20
+  w3_buy_sell_ratio_1m: 0.20
+  w4_price_return_1m: 0.15
+  w5_oi_change: 0.10
+  w6_spread_penalty: 0.05
+  w7_funding_penalty: 0.05
+
+entry:
+  long_threshold: 1.5
+  short_threshold: -1.5
+  min_delta_1m: 0.0
+  min_buy_sell_ratio_long: 1.05
+  max_buy_sell_ratio_short: 0.95
+  max_spread_bps: 30
+  max_atr_extension: 2.0
+  divergence_bonus: 0.3
+  max_correlation_positions: 5
+
+stop_tp:
+  atr_multiplier_sl: 1.5
+  tp1_r_multiple: 1.0
+  tp2_r_multiple: 2.0
+  tp1_pct: 0.33
+  tp2_pct: 0.33
+  breakeven_after_tp1: true
+  max_hold_seconds: 3600
+  flow_reversal_exit: true
+  flow_reversal_delta_threshold: -0.5
+
+risk:
+  risk_per_trade_pct: 0.5
+  max_concurrent_positions: 5
+  max_total_risk_pct: 2.0
+  max_daily_drawdown_pct: 5.0
+  max_notional_per_symbol_usdt: 10000
+  min_notional_per_trade_usdt: 10
+  cooldown_after_loss_seconds: 300
+  kill_switch_enabled: true
+  stale_data_seconds: 60.0
+
+execution:
+  use_market_orders: true
+  slippage_bps: 20
+  post_only_limit: false
+  reduce_only_exits: true
+  idempotent_order_link: true
+
+logging:
+  level: INFO
+  structured: true
+  log_file: null
+  rotation: "10 MB"
+  retention: "7 days"
+
+database_path: data/bot.db
+scan_interval_seconds: 5.0
+health_check_interval_seconds: 30.0
