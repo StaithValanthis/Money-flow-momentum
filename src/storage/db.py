@@ -1,6 +1,7 @@
 """SQLite persistence for trades, fills, signals, equity."""
 
 import sqlite3
+import threading
 from pathlib import Path
 from typing import Any, Optional
 
@@ -11,26 +12,28 @@ log = get_logger(__name__)
 
 
 class Database:
-    """SQLite database for audit trail and backtest."""
+    """SQLite database for audit trail and backtest. Thread-safe: connection may be used from main and worker threads under a lock."""
 
     def __init__(self, path: str = "data/bot.db"):
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.path = path
         self._conn: Optional[sqlite3.Connection] = None
+        self._lock = threading.Lock()
         self._init_schema()
         run_stage3_migrations(path)
 
     def _get_conn(self) -> sqlite3.Connection:
         if self._conn is None:
-            self._conn = sqlite3.connect(self.path)
+            self._conn = sqlite3.connect(self.path, check_same_thread=False)
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA synchronous=NORMAL")
             self._conn.row_factory = sqlite3.Row
         return self._conn
 
     def _init_schema(self) -> None:
-        conn = self._get_conn()
-        conn.executescript("""
+        with self._lock:
+            conn = self._get_conn()
+            conn.executescript("""
             CREATE TABLE IF NOT EXISTS trades (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 ts INTEGER,
@@ -121,7 +124,7 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_lifecycle_ts ON lifecycle_events(ts);
             CREATE INDEX IF NOT EXISTS idx_equity_ts ON equity_curve(ts);
         """)
-        conn.commit()
+            conn.commit()
 
     def insert_trade(
         self,
@@ -137,12 +140,13 @@ class Database:
     ) -> None:
         """Insert trade record."""
         try:
-            self._get_conn().execute(
-                """INSERT OR IGNORE INTO trades (ts, symbol, side, qty, price, order_id, order_link_id, pnl, config_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (ts, symbol, side, qty, price, order_id, order_link_id, pnl, config_id),
-            )
-            self._get_conn().commit()
+            with self._lock:
+                self._get_conn().execute(
+                    """INSERT OR IGNORE INTO trades (ts, symbol, side, qty, price, order_id, order_link_id, pnl, config_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (ts, symbol, side, qty, price, order_id, order_link_id, pnl, config_id),
+                )
+                self._get_conn().commit()
         except Exception as e:
             log.error(f"DB insert trade error: {e}")
 
@@ -159,34 +163,37 @@ class Database:
     ) -> None:
         """Insert signal snapshot."""
         try:
-            self._get_conn().execute(
-                """INSERT INTO signal_snapshots (ts, symbol, score, direction, delta_1m, buy_sell_ratio, json_features, config_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (ts, symbol, score, direction, delta_1m, buy_sell_ratio, json_features, config_id),
-            )
-            self._get_conn().commit()
+            with self._lock:
+                self._get_conn().execute(
+                    """INSERT INTO signal_snapshots (ts, symbol, score, direction, delta_1m, buy_sell_ratio, json_features, config_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (ts, symbol, score, direction, delta_1m, buy_sell_ratio, json_features, config_id),
+                )
+                self._get_conn().commit()
         except Exception as e:
             log.error(f"DB insert signal error: {e}")
 
     def insert_equity(self, ts: int, equity: float, pnl_daily: float = 0, config_id: Optional[str] = None) -> None:
         """Insert equity snapshot."""
         try:
-            self._get_conn().execute(
-                "INSERT INTO equity_curve (ts, equity, pnl_daily, config_id) VALUES (?, ?, ?, ?)",
-                (ts, equity, pnl_daily, config_id),
-            )
-            self._get_conn().commit()
+            with self._lock:
+                self._get_conn().execute(
+                    "INSERT INTO equity_curve (ts, equity, pnl_daily, config_id) VALUES (?, ?, ?, ?)",
+                    (ts, equity, pnl_daily, config_id),
+                )
+                self._get_conn().commit()
         except Exception as e:
             log.error(f"DB insert equity error: {e}")
 
     def insert_error(self, ts: int, module: str, message: str, traceback: str = "") -> None:
         """Insert error log."""
         try:
-            self._get_conn().execute(
-                "INSERT INTO errors (ts, module, message, traceback) VALUES (?, ?, ?, ?)",
-                (ts, module, message, traceback),
-            )
-            self._get_conn().commit()
+            with self._lock:
+                self._get_conn().execute(
+                    "INSERT INTO errors (ts, module, message, traceback) VALUES (?, ?, ?, ?)",
+                    (ts, module, message, traceback),
+                )
+                self._get_conn().commit()
         except Exception as e:
             log.error(f"DB insert error: {e}")
 
@@ -202,29 +209,32 @@ class Database:
     ) -> None:
         """Log entry decision or rejection."""
         try:
-            self._get_conn().execute(
-                """INSERT INTO entry_decisions (ts, symbol, direction, reason, score, dry_run, config_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (ts, symbol, direction, reason, score, 1 if dry_run else 0, config_id),
-            )
-            self._get_conn().commit()
+            with self._lock:
+                self._get_conn().execute(
+                    """INSERT INTO entry_decisions (ts, symbol, direction, reason, score, dry_run, config_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (ts, symbol, direction, reason, score, 1 if dry_run else 0, config_id),
+                )
+                self._get_conn().commit()
         except Exception as e:
             log.error(f"DB insert entry_decision: {e}")
 
     def insert_lifecycle_event(self, ts: int, symbol: str, event: str, phase: str = "", exit_reason: str = "", config_id: Optional[str] = None) -> None:
         try:
-            self._get_conn().execute(
-                "INSERT INTO lifecycle_events (ts, symbol, event, phase, exit_reason, config_id) VALUES (?, ?, ?, ?, ?, ?)",
-                (ts, symbol, event, phase, exit_reason, config_id),
-            )
-            self._get_conn().commit()
+            with self._lock:
+                self._get_conn().execute(
+                    "INSERT INTO lifecycle_events (ts, symbol, event, phase, exit_reason, config_id) VALUES (?, ?, ?, ?, ?, ?)",
+                    (ts, symbol, event, phase, exit_reason, config_id),
+                )
+                self._get_conn().commit()
         except Exception as e:
-            log.error(f"DB insert lifecycle: {e}")
+            log.error("DB insert lifecycle: {}", e)
 
     def insert_kill_switch(self, ts: int, reason: str) -> None:
         try:
-            self._get_conn().execute("INSERT INTO kill_switch_events (ts, reason) VALUES (?, ?)", (ts, reason))
-            self._get_conn().commit()
+            with self._lock:
+                self._get_conn().execute("INSERT INTO kill_switch_events (ts, reason) VALUES (?, ?)", (ts, reason))
+                self._get_conn().commit()
         except Exception as e:
             log.error(f"DB insert kill_switch: {e}")
 
@@ -242,113 +252,120 @@ class Database:
     ) -> None:
         """Insert fill record (used for TP1/TP2 logging)."""
         try:
-            self._get_conn().execute(
-                """INSERT OR IGNORE INTO fills
-                   (ts, exec_id, order_id, symbol, side, qty, price, closed_pnl, config_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (ts, exec_id, order_id, symbol, side, qty, price, closed_pnl, config_id),
-            )
-            self._get_conn().commit()
+            with self._lock:
+                self._get_conn().execute(
+                    """INSERT OR IGNORE INTO fills
+                       (ts, exec_id, order_id, symbol, side, qty, price, closed_pnl, config_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (ts, exec_id, order_id, symbol, side, qty, price, closed_pnl, config_id),
+                )
+                self._get_conn().commit()
         except Exception as e:
             log.error(f"DB insert fill error: {e}")
 
     def get_trades(self, since_ts: Optional[int] = None, to_ts: Optional[int] = None, config_id: Optional[str] = None) -> list[dict]:
         """Get trades for backtest/evaluation."""
-        conn = self._get_conn()
-        sql = "SELECT * FROM trades WHERE 1=1"
-        params: list[Any] = []
-        if since_ts is not None:
-            sql += " AND ts >= ?"
-            params.append(since_ts)
-        if to_ts is not None:
-            sql += " AND ts <= ?"
-            params.append(to_ts)
-        if config_id is not None:
-            sql += " AND (config_id = ? OR config_id IS NULL)"
-            params.append(config_id)
-        sql += " ORDER BY ts"
-        rows = conn.execute(sql, params).fetchall()
-        return [dict(r) for r in rows]
+        with self._lock:
+            conn = self._get_conn()
+            sql = "SELECT * FROM trades WHERE 1=1"
+            params: list[Any] = []
+            if since_ts is not None:
+                sql += " AND ts >= ?"
+                params.append(since_ts)
+            if to_ts is not None:
+                sql += " AND ts <= ?"
+                params.append(to_ts)
+            if config_id is not None:
+                sql += " AND (config_id = ? OR config_id IS NULL)"
+                params.append(config_id)
+            sql += " ORDER BY ts"
+            rows = conn.execute(sql, params).fetchall()
+            return [dict(r) for r in rows]
 
     def get_fills(self, since_ts: Optional[int] = None, to_ts: Optional[int] = None, config_id: Optional[str] = None) -> list[dict]:
-        conn = self._get_conn()
-        sql = "SELECT * FROM fills WHERE 1=1"
-        params: list[Any] = []
-        if since_ts is not None:
-            sql += " AND ts >= ?"
-            params.append(since_ts)
-        if to_ts is not None:
-            sql += " AND ts <= ?"
-            params.append(to_ts)
-        if config_id is not None:
-            sql += " AND (config_id = ? OR config_id IS NULL)"
-            params.append(config_id)
-        sql += " ORDER BY ts"
-        return [dict(r) for r in conn.execute(sql, params).fetchall()]
+        with self._lock:
+            conn = self._get_conn()
+            sql = "SELECT * FROM fills WHERE 1=1"
+            params: list[Any] = []
+            if since_ts is not None:
+                sql += " AND ts >= ?"
+                params.append(since_ts)
+            if to_ts is not None:
+                sql += " AND ts <= ?"
+                params.append(to_ts)
+            if config_id is not None:
+                sql += " AND (config_id = ? OR config_id IS NULL)"
+                params.append(config_id)
+            sql += " ORDER BY ts"
+            return [dict(r) for r in conn.execute(sql, params).fetchall()]
 
     def get_entry_decisions(self, since_ts: Optional[int] = None, to_ts: Optional[int] = None, config_id: Optional[str] = None, symbol: Optional[str] = None) -> list[dict]:
-        conn = self._get_conn()
-        sql = "SELECT * FROM entry_decisions WHERE 1=1"
-        params: list[Any] = []
-        if since_ts is not None:
-            sql += " AND ts >= ?"
-            params.append(since_ts)
-        if to_ts is not None:
-            sql += " AND ts <= ?"
-            params.append(to_ts)
-        if config_id is not None:
-            sql += " AND (config_id = ? OR config_id IS NULL)"
-            params.append(config_id)
-        if symbol is not None:
-            sql += " AND symbol = ?"
-            params.append(symbol)
-        sql += " ORDER BY ts"
-        return [dict(r) for r in conn.execute(sql, params).fetchall()]
+        with self._lock:
+            conn = self._get_conn()
+            sql = "SELECT * FROM entry_decisions WHERE 1=1"
+            params: list[Any] = []
+            if since_ts is not None:
+                sql += " AND ts >= ?"
+                params.append(since_ts)
+            if to_ts is not None:
+                sql += " AND ts <= ?"
+                params.append(to_ts)
+            if config_id is not None:
+                sql += " AND (config_id = ? OR config_id IS NULL)"
+                params.append(config_id)
+            if symbol is not None:
+                sql += " AND symbol = ?"
+                params.append(symbol)
+            sql += " ORDER BY ts"
+            return [dict(r) for r in conn.execute(sql, params).fetchall()]
 
     def get_lifecycle_events(self, since_ts: Optional[int] = None, to_ts: Optional[int] = None, config_id: Optional[str] = None) -> list[dict]:
-        conn = self._get_conn()
-        sql = "SELECT * FROM lifecycle_events WHERE 1=1"
-        params: list[Any] = []
-        if since_ts is not None:
-            sql += " AND ts >= ?"
-            params.append(since_ts)
-        if to_ts is not None:
-            sql += " AND ts <= ?"
-            params.append(to_ts)
-        if config_id is not None:
-            sql += " AND (config_id = ? OR config_id IS NULL)"
-            params.append(config_id)
-        sql += " ORDER BY ts"
-        return [dict(r) for r in conn.execute(sql, params).fetchall()]
+        with self._lock:
+            conn = self._get_conn()
+            sql = "SELECT * FROM lifecycle_events WHERE 1=1"
+            params: list[Any] = []
+            if since_ts is not None:
+                sql += " AND ts >= ?"
+                params.append(since_ts)
+            if to_ts is not None:
+                sql += " AND ts <= ?"
+                params.append(to_ts)
+            if config_id is not None:
+                sql += " AND (config_id = ? OR config_id IS NULL)"
+                params.append(config_id)
+            sql += " ORDER BY ts"
+            return [dict(r) for r in conn.execute(sql, params).fetchall()]
 
     def get_signal_snapshots(self, since_ts: Optional[int] = None, to_ts: Optional[int] = None, config_id: Optional[str] = None) -> list[dict]:
-        conn = self._get_conn()
-        sql = "SELECT * FROM signal_snapshots WHERE 1=1"
-        params: list[Any] = []
-        if since_ts is not None:
-            sql += " AND ts >= ?"
-            params.append(since_ts)
-        if to_ts is not None:
-            sql += " AND ts <= ?"
-            params.append(to_ts)
-        if config_id is not None:
-            sql += " AND (config_id = ? OR config_id IS NULL)"
-            params.append(config_id)
-        sql += " ORDER BY ts"
-        return [dict(r) for r in conn.execute(sql, params).fetchall()]
+        with self._lock:
+            conn = self._get_conn()
+            sql = "SELECT * FROM signal_snapshots WHERE 1=1"
+            params: list[Any] = []
+            if since_ts is not None:
+                sql += " AND ts >= ?"
+                params.append(since_ts)
+            if to_ts is not None:
+                sql += " AND ts <= ?"
+                params.append(to_ts)
+            if config_id is not None:
+                sql += " AND (config_id = ? OR config_id IS NULL)"
+                params.append(config_id)
+            sql += " ORDER BY ts"
+            return [dict(r) for r in conn.execute(sql, params).fetchall()]
 
     def get_equity_curve(self, since_ts: Optional[int] = None, to_ts: Optional[int] = None) -> list[dict]:
-        conn = self._get_conn()
-        sql = "SELECT * FROM equity_curve WHERE 1=1"
-        params: list[Any] = []
-        if since_ts is not None:
-            sql += " AND ts >= ?"
-            params.append(since_ts)
-        if to_ts is not None:
-            sql += " AND ts <= ?"
-            params.append(to_ts)
-        sql += " ORDER BY ts"
-        return [dict(r) for r in conn.execute(sql, params).fetchall()]
+        with self._lock:
+            conn = self._get_conn()
+            sql = "SELECT * FROM equity_curve WHERE 1=1"
+            params: list[Any] = []
+            if since_ts is not None:
+                sql += " AND ts >= ?"
+                params.append(since_ts)
+            if to_ts is not None:
+                sql += " AND ts <= ?"
+                params.append(to_ts)
+            sql += " ORDER BY ts"
+            return [dict(r) for r in conn.execute(sql, params).fetchall()]
 
     def insert_evaluation_report(
         self,
@@ -360,12 +377,13 @@ class Database:
         report_path: Optional[str] = None,
     ) -> None:
         try:
-            self._get_conn().execute(
-                """INSERT INTO evaluation_reports (run_id, config_id, from_ts, to_ts, created_at, summary_json, report_path)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (run_id, config_id, from_ts, to_ts, int(__import__("time").time() * 1000), summary_json, report_path),
-            )
-            self._get_conn().commit()
+            with self._lock:
+                self._get_conn().execute(
+                    """INSERT INTO evaluation_reports (run_id, config_id, from_ts, to_ts, created_at, summary_json, report_path)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (run_id, config_id, from_ts, to_ts, int(__import__("time").time() * 1000), summary_json, report_path),
+                )
+                self._get_conn().commit()
         except Exception as e:
             log.error(f"DB insert evaluation_report: {e}")
 
@@ -379,12 +397,13 @@ class Database:
         summary_json: str = "",
     ) -> None:
         try:
-            self._get_conn().execute(
-                """INSERT INTO optimization_runs (run_id, baseline_config_id, created_at, from_ts, to_ts, status, summary_json)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (run_id, baseline_config_id, int(__import__("time").time() * 1000), from_ts, to_ts, status, summary_json),
-            )
-            self._get_conn().commit()
+            with self._lock:
+                self._get_conn().execute(
+                    """INSERT INTO optimization_runs (run_id, baseline_config_id, created_at, from_ts, to_ts, status, summary_json)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (run_id, baseline_config_id, int(__import__("time").time() * 1000), from_ts, to_ts, status, summary_json),
+                )
+                self._get_conn().commit()
         except Exception as e:
             log.error(f"DB insert optimization_run: {e}")
 
@@ -400,12 +419,13 @@ class Database:
         reason_codes: str = "",
     ) -> None:
         try:
-            self._get_conn().execute(
-                """INSERT INTO optimization_results (run_id, config_id, segment_name, in_sample, metrics_json, params_json, pass_fail, reason_codes)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (run_id, config_id, segment_name, in_sample, metrics_json, params_json, pass_fail, reason_codes),
-            )
-            self._get_conn().commit()
+            with self._lock:
+                self._get_conn().execute(
+                    """INSERT INTO optimization_results (run_id, config_id, segment_name, in_sample, metrics_json, params_json, pass_fail, reason_codes)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (run_id, config_id, segment_name, in_sample, metrics_json, params_json, pass_fail, reason_codes),
+                )
+                self._get_conn().commit()
         except Exception as e:
             log.error(f"DB insert optimization_result: {e}")
 
@@ -419,12 +439,13 @@ class Database:
         message: str,
     ) -> None:
         try:
-            self._get_conn().execute(
-                """INSERT INTO degradation_events (config_id, ts, severity, metric, value, threshold, message)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (config_id, int(__import__("time").time() * 1000), severity, metric, value, threshold, message),
-            )
-            self._get_conn().commit()
+            with self._lock:
+                self._get_conn().execute(
+                    """INSERT INTO degradation_events (config_id, ts, severity, metric, value, threshold, message)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (config_id, int(__import__("time").time() * 1000), severity, metric, value, threshold, message),
+                )
+                self._get_conn().commit()
         except Exception as e:
             log.error(f"DB insert degradation: {e}")
 
@@ -450,15 +471,16 @@ class Database:
         strategy: Optional[str] = None,
     ) -> None:
         try:
-            self._get_conn().execute(
-                """INSERT INTO execution_audit
-                   (ts, symbol, side, intent_qty, intent_price, intent_stop, order_id, order_link_id, ack_ts,
-                    fill_qty, fill_price, fill_ts, slippage_bps, size_delta, notional_delta, mismatch_reason, config_id, strategy)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (ts, symbol, side, intent_qty, intent_price, intent_stop, order_id, order_link_id, ack_ts,
-                 fill_qty, fill_price, fill_ts, slippage_bps, size_delta, notional_delta, mismatch_reason, config_id, strategy),
-            )
-            self._get_conn().commit()
+            with self._lock:
+                self._get_conn().execute(
+                    """INSERT INTO execution_audit
+                       (ts, symbol, side, intent_qty, intent_price, intent_stop, order_id, order_link_id, ack_ts,
+                        fill_qty, fill_price, fill_ts, slippage_bps, size_delta, notional_delta, mismatch_reason, config_id, strategy)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (ts, symbol, side, intent_qty, intent_price, intent_stop, order_id, order_link_id, ack_ts,
+                     fill_qty, fill_price, fill_ts, slippage_bps, size_delta, notional_delta, mismatch_reason, config_id, strategy),
+                )
+                self._get_conn().commit()
         except Exception as e:
             log.error(f"DB insert execution_audit: {e}")
 
@@ -474,12 +496,13 @@ class Database:
         config_id: Optional[str] = None,
     ) -> None:
         try:
-            self._get_conn().execute(
-                """INSERT INTO protection_audit (ts, symbol, check_type, expected_value, actual_value, repaired, message, config_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (ts, symbol, check_type, expected_value, actual_value, 1 if repaired else 0, message, config_id),
-            )
-            self._get_conn().commit()
+            with self._lock:
+                self._get_conn().execute(
+                    """INSERT INTO protection_audit (ts, symbol, check_type, expected_value, actual_value, repaired, message, config_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (ts, symbol, check_type, expected_value, actual_value, 1 if repaired else 0, message, config_id),
+                )
+                self._get_conn().commit()
         except Exception as e:
             log.error(f"DB insert protection_audit: {e}")
 
@@ -494,12 +517,13 @@ class Database:
         phase: Optional[str] = None,
     ) -> None:
         try:
-            self._get_conn().execute(
-                """INSERT INTO burnin_gate_breaches (ts, gate_name, value, limit_value, message, config_id, phase)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (ts, gate_name, value, limit_value, message, config_id, phase),
-            )
-            self._get_conn().commit()
+            with self._lock:
+                self._get_conn().execute(
+                    """INSERT INTO burnin_gate_breaches (ts, gate_name, value, limit_value, message, config_id, phase)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (ts, gate_name, value, limit_value, message, config_id, phase),
+                )
+                self._get_conn().commit()
         except Exception as e:
             log.error(f"DB insert burnin_gate_breach: {e}")
 
@@ -515,13 +539,14 @@ class Database:
         mismatch_reason: Optional[str] = None,
     ) -> None:
         try:
-            conn = self._get_conn()
-            conn.execute(
-                """UPDATE execution_audit SET fill_qty = ?, fill_price = ?, fill_ts = ?, slippage_bps = ?, size_delta = ?, notional_delta = ?, mismatch_reason = ?
-                   WHERE order_id = ?""",
-                (fill_qty, fill_price, fill_ts, slippage_bps, size_delta, notional_delta, mismatch_reason, order_id),
-            )
-            conn.commit()
+            with self._lock:
+                conn = self._get_conn()
+                conn.execute(
+                    """UPDATE execution_audit SET fill_qty = ?, fill_price = ?, fill_ts = ?, slippage_bps = ?, size_delta = ?, notional_delta = ?, mismatch_reason = ?
+                       WHERE order_id = ?""",
+                    (fill_qty, fill_price, fill_ts, slippage_bps, size_delta, notional_delta, mismatch_reason, order_id),
+                )
+                conn.commit()
         except Exception as e:
             log.error(f"DB update execution_audit fill: {e}")
 
@@ -532,23 +557,24 @@ class Database:
         config_id: Optional[str] = None,
         order_id: Optional[str] = None,
     ) -> list[dict]:
-        conn = self._get_conn()
-        sql = "SELECT * FROM execution_audit WHERE 1=1"
-        params: list[Any] = []
-        if since_ts is not None:
-            sql += " AND ts >= ?"
-            params.append(since_ts)
-        if to_ts is not None:
-            sql += " AND ts <= ?"
-            params.append(to_ts)
-        if config_id is not None:
-            sql += " AND (config_id = ? OR config_id IS NULL)"
-            params.append(config_id)
-        if order_id is not None:
-            sql += " AND order_id = ?"
-            params.append(order_id)
-        sql += " ORDER BY ts"
-        return [dict(r) for r in conn.execute(sql, params).fetchall()]
+        with self._lock:
+            conn = self._get_conn()
+            sql = "SELECT * FROM execution_audit WHERE 1=1"
+            params: list[Any] = []
+            if since_ts is not None:
+                sql += " AND ts >= ?"
+                params.append(since_ts)
+            if to_ts is not None:
+                sql += " AND ts <= ?"
+                params.append(to_ts)
+            if config_id is not None:
+                sql += " AND (config_id = ? OR config_id IS NULL)"
+                params.append(config_id)
+            if order_id is not None:
+                sql += " AND order_id = ?"
+                params.append(order_id)
+            sql += " ORDER BY ts"
+            return [dict(r) for r in conn.execute(sql, params).fetchall()]
 
     def get_protection_audit(
         self,
@@ -556,20 +582,21 @@ class Database:
         to_ts: Optional[int] = None,
         config_id: Optional[str] = None,
     ) -> list[dict]:
-        conn = self._get_conn()
-        sql = "SELECT * FROM protection_audit WHERE 1=1"
-        params: list[Any] = []
-        if since_ts is not None:
-            sql += " AND ts >= ?"
-            params.append(since_ts)
-        if to_ts is not None:
-            sql += " AND ts <= ?"
-            params.append(to_ts)
-        if config_id is not None:
-            sql += " AND (config_id = ? OR config_id IS NULL)"
-            params.append(config_id)
-        sql += " ORDER BY ts"
-        return [dict(r) for r in conn.execute(sql, params).fetchall()]
+        with self._lock:
+            conn = self._get_conn()
+            sql = "SELECT * FROM protection_audit WHERE 1=1"
+            params: list[Any] = []
+            if since_ts is not None:
+                sql += " AND ts >= ?"
+                params.append(since_ts)
+            if to_ts is not None:
+                sql += " AND ts <= ?"
+                params.append(to_ts)
+            if config_id is not None:
+                sql += " AND (config_id = ? OR config_id IS NULL)"
+                params.append(config_id)
+            sql += " ORDER BY ts"
+            return [dict(r) for r in conn.execute(sql, params).fetchall()]
 
     def get_burnin_gate_breaches(
         self,
@@ -577,23 +604,25 @@ class Database:
         to_ts: Optional[int] = None,
         config_id: Optional[str] = None,
     ) -> list[dict]:
-        conn = self._get_conn()
-        sql = "SELECT * FROM burnin_gate_breaches WHERE 1=1"
-        params: list[Any] = []
-        if since_ts is not None:
-            sql += " AND ts >= ?"
-            params.append(since_ts)
-        if to_ts is not None:
-            sql += " AND ts <= ?"
-            params.append(to_ts)
-        if config_id is not None:
-            sql += " AND (config_id = ? OR config_id IS NULL)"
-            params.append(config_id)
-        sql += " ORDER BY ts"
-        return [dict(r) for r in conn.execute(sql, params).fetchall()]
+        with self._lock:
+            conn = self._get_conn()
+            sql = "SELECT * FROM burnin_gate_breaches WHERE 1=1"
+            params: list[Any] = []
+            if since_ts is not None:
+                sql += " AND ts >= ?"
+                params.append(since_ts)
+            if to_ts is not None:
+                sql += " AND ts <= ?"
+                params.append(to_ts)
+            if config_id is not None:
+                sql += " AND (config_id = ? OR config_id IS NULL)"
+                params.append(config_id)
+            sql += " ORDER BY ts"
+            return [dict(r) for r in conn.execute(sql, params).fetchall()]
 
     def close(self) -> None:
         """Close connection."""
-        if self._conn:
-            self._conn.close()
-            self._conn = None
+        with self._lock:
+            if self._conn:
+                self._conn.close()
+                self._conn = None
