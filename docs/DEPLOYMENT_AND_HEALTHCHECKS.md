@@ -16,7 +16,7 @@ python run_bot.py validate
 # or: ./scripts/validate_env.sh
 ```
 
-Exits 0 if config, .env (when needed), dirs, mode/testnet consistency, and active strategy are OK; exits 1 with clear errors otherwise. When validation passes, the CLI prints readiness hints for testnet burn-in vs guarded small-live. See **docs/BURN_IN_OPERATOR_RUNBOOK.md** for the full install → validate → burn-in → live → evaluate → optimize → shadow → promote/rollback workflow and script reference.
+Exits 0 if config, credentials for **selected environment** (demo/live/testnet via BYBIT_ENV), dirs, mode/env consistency, and active strategy are OK. With dual-key, validation ensures the selected environment has a key pair (demo or live); mismatches (e.g. BYBIT_ENV=demo but only live keys set) fail clearly. When validation passes, the CLI prints readiness hints for demo burn-in vs guarded small-live. See **docs/BURN_IN_OPERATOR_RUNBOOK.md** for the full install → validate → burn-in → live → evaluate → optimize → shadow → promote/rollback workflow and script reference.
 
 ## CLI Commands (Ubuntu / Linux)
 
@@ -30,6 +30,15 @@ python3 run_bot.py burnin readiness
 python3 run_bot.py burnin readiness --output artifacts/burnin
 ```
 Use when `burn_in.burn_in_enabled` is true to see gate breaches and readiness. See **docs/BURN_IN_AND_LIVE_VALIDATION.md**.
+
+### Promote environment (Demo -> Live)
+```bash
+python3 run_bot.py promote-env                    # preview only
+python3 run_bot.py promote-env --confirm-live    # apply switch (backs up .env and config)
+python3 run_bot.py promote-env --confirm-live --reason "demo burn-in passed"
+# or: ./scripts/promote_demo_to_live.sh [--confirm-live] [--start-live]
+```
+Does **not** auto-promote; requires `--confirm-live` to change `.env` and config. Checks readiness (READY_FOR_SMALL_LIVE) and live credentials first. Writes `artifacts/validation/env_promotion_<ts>.json` and `.md`. See **docs/BURN_IN_OPERATOR_RUNBOOK.md** (section 8a).
 
 ### Health check
 ```bash

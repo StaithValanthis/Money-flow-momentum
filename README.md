@@ -11,40 +11,34 @@ Production-ready Bybit V5 cross-sectional flow impulse trading bot for linear US
 - **Private reconciliation**: Orders, fills, positions via private WS + REST fallback; orphan recovery
 - **Lifecycle management**: TP1/TP2, breakeven move, time stop, flow-reversal exit
 - **Robust risk management**: ATR stops, daily drawdown/loss kill switch, max positions per side, circuit breaker
-- **Bybit V5**: REST + WebSocket, testnet/mainnet, one-way mode
+- **Bybit V5**: REST + WebSocket; **demo** (api-demo.bybit.com, stream-demo.bybit.com for private; mainnet public data) and mainnet; optional testnet (legacy)
 - **Deployable**: Ubuntu CLI, systemd service, log rotation
 - **Stage 3 (adaptive framework)**: Config versioning, evaluation reports, walk-forward optimization, guardrails, shadow comparison, promotion/rollback, degradation monitoring (see [docs/STAGE3_ADAPTIVE_FRAMEWORK.md](docs/STAGE3_ADAPTIVE_FRAMEWORK.md))
 - **Stage 4 (strategy refinement)**: Flow feature expansion, regime filters, adaptive thresholds, improved ranking, exit refinements (exhaustion/failed-breakout), cluster controls, Stage 4 evaluation metrics and optimizer params (see [docs/STAGE4_STRATEGY_REFINEMENT.md](docs/STAGE4_STRATEGY_REFINEMENT.md), [docs/REGIME_FILTERS_AND_THRESHOLDS.md](docs/REGIME_FILTERS_AND_THRESHOLDS.md))
 - **Stage 5 (platform & portfolio)**: Portfolio risk budgeting, **candidate-set allocator** (allocates across multiple candidates, prefers stronger scores when budgets are tight), exposure controls, strategy registry, replay/fill model, **heartbeat written by runtime loops** (context refresh, WS, reconciliation, lifecycle, score/entry, degradation monitor), health/status/report CLI with real loop freshness (see [docs/STAGE5_PLATFORM_AND_PORTFOLIO.md](docs/STAGE5_PLATFORM_AND_PORTFOLIO.md), [docs/MONITORING_AND_ALERTING.md](docs/MONITORING_AND_ALERTING.md), [docs/DEPLOYMENT_AND_HEALTHCHECKS.md](docs/DEPLOYMENT_AND_HEALTHCHECKS.md))
-- **Burn-in / live validation**: Optional **burn-in mode** with stricter limits, execution audit (intended vs actual), protection-state audit, gate breaches, and readiness reporting for testnet and small-cap live rollout (see [docs/BURN_IN_AND_LIVE_VALIDATION.md](docs/BURN_IN_AND_LIVE_VALIDATION.md))
+- **Burn-in / live validation**: Optional **burn-in mode** with stricter limits, execution audit, protection-state audit, gate breaches, and readiness reporting for **Bybit Demo** (recommended) and small-cap live rollout (see [docs/BURN_IN_AND_LIVE_VALIDATION.md](docs/BURN_IN_AND_LIVE_VALIDATION.md))
 
-## Demo / testnet (Ubuntu CLI)
+## Demo / burn-in (Ubuntu CLI)
+
+**Bybit Demo Trading** is the recommended burn-in path: create demo API keys from your mainnet account (Demo Trading). Set `BYBIT_ENV=demo`, `BYBIT_DEMO_API_KEY`, `BYBIT_DEMO_API_SECRET` in `.env`. Do not use testnet for demo.
 
 ```bash
 # From repo root
 chmod +x install.sh
 ./install.sh
-# Create venv and install deps; then:
-source venv/bin/activate   # or: . venv/bin/activate
-
-# Bootstrap API keys (use testnet keys)
-python3 bootstrap_config.py
-
-# Ensure config is paper/dry_run
-# Edit config/config.yaml: mode: paper  (or dry_run for no orders at all)
-
-# Run (demo: no live orders if mode=paper/dry_run)
-python3 run_bot.py run
-
-# Or with config path
-python3 run_bot.py run --config config/config.yaml
+source venv/bin/activate
+python3 bootstrap_config.py   # prompts for demo keys, optionally live keys
+# Edit config/config.yaml: mode: paper, burn_in_enabled: true, burn_in_phase: demo
+python3 run_bot.py validate
+python3 run_bot.py show-runtime-mode
+./scripts/start_testnet_burnin.sh   # starts demo burn-in (or run_bot.py run)
 ```
 
 To run fully dry (no exchange orders, only signal/decision logging): set `mode: dry_run` in config.
 
 ### 2. Bootstrap config (optional, if not done in install)
 
-Prompts for: Bybit API key/secret, testnet/mainnet, risk per trade, max positions, account size. Writes `.env` and `config/config.yaml`.
+Prompts for: **demo** API key/secret (Bybit Demo Trading; from mainnet account), optionally **live** key/secret (dual-key), default BYBIT_ENV (demo/live/testnet). Writes `.env` with `BYBIT_ENV`, `BYBIT_DEMO_API_KEY/SECRET`, `BYBIT_LIVE_API_KEY/SECRET`. Copy `.env.example` for variable names.
 
 ```bash
 python3 bootstrap_config.py
@@ -80,7 +74,7 @@ scripts/
 ## Configuration
 
 - `config/config.yaml` – strategy, risk, execution, context refresh, WS, recovery
-- `.env` – API keys (never commit)
+- `.env` – API keys (never commit). **Dual-key (recommended):** `BYBIT_ENV=demo|live`, `BYBIT_DEMO_API_KEY`, `BYBIT_DEMO_API_SECRET`, `BYBIT_LIVE_API_KEY`, `BYBIT_LIVE_API_SECRET`. Legacy: `BYBIT_API_KEY`, `BYBIT_API_SECRET` or `BYBIT_ENV=testnet` with testnet keys.
 
 See `config/config.yaml.example` for all options. Key additions:
 - **dry_run / demo_mode**: Same decision path, no live orders when true
@@ -93,7 +87,7 @@ See `config/config.yaml.example` for all options. Key additions:
 - `scripts/paper_trade.sh` – Paper mode (testnet)
 - `scripts/live_trade.sh` – Live (mainnet)
 - `scripts/check_health.sh` – Health check
-- **Operator workflow (burn-in):** `scripts/validate_env.sh`, `scripts/start_testnet_burnin.sh`, `scripts/check_burnin.sh`, `scripts/check_small_live_ready.sh`, `scripts/start_small_live.sh`, `scripts/incident_stop.sh`, `scripts/generate_burnin_bundle.sh`, `scripts/show_runtime_mode.sh`, `scripts/backup_config.sh`, `scripts/operator_menu.sh`
+- **Operator workflow (burn-in):** `scripts/validate_env.sh`, `scripts/start_testnet_burnin.sh` (demo burn-in), `scripts/check_burnin.sh`, `scripts/check_small_live_ready.sh`, **`scripts/promote_demo_to_live.sh`** (promote-env), `scripts/start_small_live.sh`, `scripts/incident_stop.sh`, `scripts/generate_burnin_bundle.sh`, `scripts/show_runtime_mode.sh`, `scripts/backup_config.sh`, `scripts/operator_menu.sh`
 - **Systemd:** `scripts/install_systemd.sh`, `scripts/service_status.sh`, `scripts/tail_logs.sh`
 
 See **docs/BURN_IN_OPERATOR_RUNBOOK.md** for full install → validate → burn-in → guarded live → evaluate → optimize → shadow → promote/rollback workflow.

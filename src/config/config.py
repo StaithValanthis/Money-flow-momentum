@@ -15,18 +15,99 @@ load_dotenv()
 logger = get_logger(__name__)
 
 
-class EnvSettings(BaseSettings):
-    """Secrets and env-only settings."""
+"""Configuration loading and validation using Pydantic."""
 
+from pathlib import Path
+from typing import Optional, Literal
+
+import yaml
+from dotenv import load_dotenv
+from pydantic import BaseModel, Field
+from pydantic_settings import BaseSettings
+
+from src.utils.logging import get_logger
+
+load_dotenv()
+
+logger = get_logger(__name__)
+
+BybitEnvType = Literal["demo", "live", "testnet"]
+
+
+class EnvSettings(BaseSettings):
+    """Secrets and env-only settings. Prefer dual-key (demo + live) for Bybit Demo Trading and mainnet."""
+
+    # Environment selector: demo (recommended burn-in) | live | testnet (legacy)
+    bybit_env: str = "demo"
+    # Legacy single pair (backward compatibility)
     bybit_api_key: str = ""
     bybit_api_secret: str = ""
+    # Legacy: true = testnet, false = live (ignored if bybit_env is set)
     bybit_testnet: bool = True
+    # Dual-key: demo (Bybit Demo Trading; keys from mainnet account Demo mode)
+    bybit_demo_api_key: str = ""
+    bybit_demo_api_secret: str = ""
+    # Dual-key: live/mainnet
+    bybit_live_api_key: str = ""
+    bybit_live_api_secret: str = ""
+    # Legacy testnet keys (secondary; do not use with demo)
+    bybit_testnet_api_key: str = ""
+    bybit_testnet_api_secret: str = ""
 
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",
         "extra": "ignore",
     }
+
+
+def get_bybit_env(env: EnvSettings) -> BybitEnvType:
+    """Resolve effective environment: BYBIT_ENV if set, else BYBIT_TESTNET -> testnet/live."""
+    e = (getattr(env, "bybit_env", "") or "").strip().lower()
+    if e in ("demo", "live", "testnet"):
+        return e  # type: ignore
+    if getattr(env, "bybit_testnet", True):
+        return "testnet"
+    return "live"
+
+
+def resolve_bybit_credentials(env: EnvSettings, env_type: Optional[BybitEnvType] = None) -> tuple[str, str, bool, BybitEnvType]:
+    """
+    Resolve effective Bybit API key and secret for the given environment.
+    env_type: demo | live | testnet. If None, uses get_bybit_env(env).
+    Returns (api_key, api_secret, is_legacy_fallback, effective_env_type).
+    """
+    effective = env_type or get_bybit_env(env)
+    if effective == "demo":
+        key = (env.bybit_demo_api_key or "").strip()
+        secret = (env.bybit_demo_api_secret or "").strip()
+        if key and secret:
+            return key, secret, False, "demo"
+        key = (env.bybit_api_key or "").strip()
+        secret = (env.bybit_api_secret or "").strip()
+        if key and secret:
+            return key, secret, True, "demo"
+        return "", "", False, "demo"
+    if effective == "live":
+        key = (env.bybit_live_api_key or "").strip()
+        secret = (env.bybit_live_api_secret or "").strip()
+        if key and secret:
+            return key, secret, False, "live"
+        key = (env.bybit_api_key or "").strip()
+        secret = (env.bybit_api_secret or "").strip()
+        if key and secret:
+            return key, secret, True, "live"
+        return "", "", False, "live"
+    # testnet (legacy)
+    key = (env.bybit_testnet_api_key or "").strip()
+    secret = (env.bybit_testnet_api_secret or "").strip()
+    if key and secret:
+        return key, secret, False, "testnet"
+    key = (env.bybit_api_key or "").strip()
+    secret = (env.bybit_api_secret or "").strip()
+    if key and secret:
+        return key, secret, True, "testnet"
+    return "", "", False, "testnet"
 
 
 class ExchangeConfig(BaseModel):
@@ -171,7 +252,7 @@ class BurnInConfig(BaseModel):
     """Burn-in / validation mode: stricter limits and validation artifacts."""
 
     burn_in_enabled: bool = False
-    burn_in_phase: str = Field(default="testnet", pattern="^(testnet|live_small|live_guarded)$")
+    burn_in_phase: str = Field(default="demo", pattern="^(demo|testnet|live_small|live_guarded)$")
     burn_in_max_trades_per_day: int = Field(default=20, ge=1, le=200)
     burn_in_max_notional_usdt: float = Field(default=5_000.0, ge=100, le=500_000)
     burn_in_required_report_window_hours: float = Field(default=24.0, ge=1, le=168)
@@ -251,9 +332,9 @@ def load_config(config_path: Optional[Path] = None) -> tuple[Config, EnvSettings
     with open(config_path, encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
 
-    # Override testnet from env
+    # Override exchange testnet from env: only true when env is testnet (demo and live use mainnet endpoints)
     data.setdefault("exchange", {})
-    data["exchange"]["testnet"] = env.bybit_testnet
+    data["exchange"]["testnet"] = get_bybit_env(env) == "testnet"
 
     config = Config.model_validate(data)
     if config.mode == "dry_run":

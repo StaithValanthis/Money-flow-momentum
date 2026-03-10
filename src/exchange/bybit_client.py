@@ -15,27 +15,30 @@ log = get_logger(__name__)
 # Bybit V5 endpoints
 REST_MAINNET = "https://api.bybit.com"
 REST_TESTNET = "https://api-testnet.bybit.com"
+REST_DEMO = "https://api-demo.bybit.com"
 WS_PUBLIC_MAINNET = "wss://stream.bybit.com/v5/public/linear"
 WS_PUBLIC_TESTNET = "wss://stream-testnet.bybit.com/v5/public/linear"
 WS_PRIVATE_MAINNET = "wss://stream.bybit.com/v5/private"
 WS_PRIVATE_TESTNET = "wss://stream-testnet.bybit.com/v5/private"
+WS_PRIVATE_DEMO = "wss://stream-demo.bybit.com/v5/private"
 
 
 class BybitClient:
-    """Bybit V5 client: REST + public/private WebSockets with reconnect logic."""
+    """Bybit V5 client: REST + public/private WebSockets. Demo mode: demo REST + demo private WS + mainnet public WS."""
 
     def __init__(
         self,
         api_key: str,
         api_secret: str,
         testnet: bool = True,
+        demo: bool = False,
         config: Optional[ExchangeConfig] = None,
     ):
         self.api_key = api_key
         self.api_secret = api_secret
         self.testnet = testnet
+        self.demo = demo
         self.config = config or ExchangeConfig()
-
         self._http: Optional[HTTP] = None
         self._ws_public: Optional[WebSocket] = None
         self._ws_private: Optional[WebSocket] = None
@@ -44,13 +47,21 @@ class BybitClient:
 
     @property
     def http(self) -> HTTP:
-        """Lazy-initialize REST client."""
+        """Lazy-initialize REST client. Demo uses api-demo.bybit.com; do not use testnet with demo."""
         if self._http is None:
-            self._http = HTTP(
-                testnet=self.testnet,
-                api_key=self.api_key,
-                api_secret=self.api_secret,
-            )
+            if self.demo:
+                self._http = HTTP(
+                    testnet=False,
+                    demo=True,
+                    api_key=self.api_key,
+                    api_secret=self.api_secret,
+                )
+            else:
+                self._http = HTTP(
+                    testnet=self.testnet,
+                    api_key=self.api_key,
+                    api_secret=self.api_secret,
+                )
         return self._http
 
     def _rate_limit(self) -> None:
@@ -283,6 +294,7 @@ class BybitClient:
         return self._retry_rest(_call)
 
     # --- WebSocket Public ---
+    # Demo mode: use mainnet public WS (Bybit: demo public data = mainnet). Otherwise testnet/mainnet by flag.
 
     def start_public_ws(
         self,
@@ -290,7 +302,7 @@ class BybitClient:
         on_trade: Callable[[dict], None],
         on_ticker: Optional[Callable[[dict], None]] = None,
     ) -> WebSocket:
-        """Start public WebSocket for trades and optionally tickers."""
+        """Start public WebSocket for trades and optionally tickers. In demo mode uses mainnet public stream."""
         def _trade_handler(msg: dict) -> None:
             try:
                 data = msg.get("data", [])
@@ -312,11 +324,12 @@ class BybitClient:
             except Exception as e:
                 log.error(f"WS ticker handler error: {e}")
 
+        use_mainnet_public = self.demo  # demo: mainnet public data
         self._ws_public = WebSocket(
-            testnet=self.testnet,
+            testnet=False if use_mainnet_public else self.testnet,
             channel_type="linear",
+            demo=False if use_mainnet_public else False,
         )
-        # Pybit trade_stream accepts symbol or list of symbols
         sym_arg = symbols if len(symbols) <= 50 else symbols[:50]
         self._ws_public.trade_stream(symbol=sym_arg, callback=_trade_handler)
         if on_ticker and sym_arg:
@@ -329,10 +342,11 @@ class BybitClient:
         on_position: Callable[[dict], None],
         on_execution: Optional[Callable[[dict], None]] = None,
     ) -> WebSocket:
-        """Start private WebSocket for orders, positions, executions."""
+        """Start private WebSocket for orders, positions, executions. Demo uses stream-demo.bybit.com."""
         self._ws_private = WebSocket(
-            testnet=self.testnet,
+            testnet=False if self.demo else self.testnet,
             channel_type="private",
+            demo=self.demo,
             api_key=self.api_key,
             api_secret=self.api_secret,
         )

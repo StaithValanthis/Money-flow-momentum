@@ -1,6 +1,18 @@
 # Burn-in and Live Validation
 
-This document describes **burn-in mode** and how to use it for testnet and small-cap live validation.
+This document describes **burn-in mode** and how to use it for **Bybit Demo Trading** (recommended) and small-cap live validation.
+
+## Credentials: dual-key (recommended)
+
+Use **separate key pairs** for demo and live so you never overwrite one with the other:
+
+- **Demo (Bybit Demo Trading):** `BYBIT_DEMO_API_KEY`, `BYBIT_DEMO_API_SECRET` — create from your **mainnet** account → Demo Trading. **Do not** use testnet for demo; Bybit warns against "Demo Trading on Testnet."
+- **Live:** `BYBIT_LIVE_API_KEY`, `BYBIT_LIVE_API_SECRET`
+- **Selector:** `BYBIT_ENV=demo` → use demo keys; `BYBIT_ENV=live` → use live keys. Optional legacy: `BYBIT_ENV=testnet` uses testnet keys (legacy; prefer demo for burn-in).
+
+**Endpoints for demo:** REST `https://api-demo.bybit.com`, private WS `wss://stream-demo.bybit.com`, **public market data** from mainnet `wss://stream.bybit.com` (demo public data is same as mainnet; use mainnet public per Bybit docs).
+
+Run `python run_bot.py show-runtime-mode` to see `selected_environment` (DEMO/LIVE/TESTNET), `credential_mode` (dual_key vs legacy), and `selected_key_pair` (present/missing). The system **does not** auto-switch from demo to live; you must set `BYBIT_ENV=live` and have live keys before starting guarded small-live. Legacy single-key (`BYBIT_API_KEY`, `BYBIT_API_SECRET`) is supported as fallback but not recommended for production.
 
 ## What is burn-in mode?
 
@@ -21,7 +33,7 @@ In `config/config.yaml` (or your config file), under `burn_in`:
 ```yaml
 burn_in:
   burn_in_enabled: true
-  burn_in_phase: testnet          # testnet | live_small | live_guarded
+  burn_in_phase: demo             # demo | testnet | live_small | live_guarded
   burn_in_max_trades_per_day: 20
   burn_in_max_notional_usdt: 5000
   burn_in_required_report_window_hours: 24
@@ -32,59 +44,37 @@ burn_in:
   burn_in_max_reconnect_per_hour: 5
 ```
 
-- **burn_in_phase**: `testnet` for testnet continuation; `live_small` for small live; `live_guarded` for guarded live.
+- **burn_in_phase**: `demo` for demo burn-in (recommended); `testnet` for legacy testnet; `live_small` for small live; `live_guarded` for guarded live.
 - **burn_in_fail_on_***: when true, any protection mismatch or execution drift in the window causes gate breach and blocks new entries until the next window or config change.
 - Other limits are enforced only when burn-in is enabled.
 
-## Running burn-in on testnet
+## Running burn-in on demo (recommended)
 
-1. Set exchange to testnet (e.g. `.env`: `BYBIT_TESTNET=true`).
+1. Set **demo** keys in `.env`: `BYBIT_ENV=demo`, `BYBIT_DEMO_API_KEY`, `BYBIT_DEMO_API_SECRET` (create from mainnet account → Demo Trading; do not use testnet for demo).
 2. Set `mode: paper` or `dry_run: true` if you want no real orders at first.
-3. Enable burn-in and set a low `burn_in_max_trades_per_day` and `burn_in_max_notional_usdt`:
+3. Enable burn-in and set phase to `demo`:
 
    ```yaml
    burn_in:
      burn_in_enabled: true
-     burn_in_phase: testnet
+     burn_in_phase: demo
      burn_in_max_trades_per_day: 10
      burn_in_max_notional_usdt: 2000
    ```
 
-4. Run the bot:
+4. Run the bot: `python3 run_bot.py run` or `./scripts/start_testnet_burnin.sh`.
+5. Check status and readiness regularly (see CLI reference below).
+6. Inspect artifacts: `artifacts/heartbeat.json`, `artifacts/burnin/readiness_*.json`, DB tables.
 
-   ```bash
-   python3 run_bot.py run
-   ```
+## Running burn-in on testnet (legacy)
 
-5. Check status and readiness regularly:
-
-   ```bash
-   python3 run_bot.py status
-   python3 run_bot.py burnin status
-   python3 run_bot.py burnin readiness
-   python3 run_bot.py burnin report
-   ```
-
-6. Inspect artifacts:
-
-   - `artifacts/heartbeat.json` – loop freshness.
-   - `artifacts/burnin/readiness_*.json` and `readiness_*.md` – after `burnin readiness` (or with `--output artifacts/burnin`).
-   - DB tables: `execution_audit`, `protection_audit`, `burnin_gate_breaches`.
+1. Set **testnet** keys: `BYBIT_ENV=testnet`, `BYBIT_TESTNET_API_KEY`, `BYBIT_TESTNET_API_SECRET` (or legacy pair).
+2. Set `burn_in_phase: testnet` and run as above. Prefer **demo** for new setups.
 
 ## Running burn-in on small live
 
-1. After testnet looks good, set `mode: live` and use **small** size (e.g. low `risk_per_trade_pct`, low `burn_in_max_notional_usdt`).
-2. Set:
-
-   ```yaml
-   burn_in:
-     burn_in_enabled: true
-     burn_in_phase: live_small
-     burn_in_max_trades_per_day: 5
-     burn_in_max_notional_usdt: 1000
-   ```
-
-3. Run and monitor the same way as testnet. Review evaluation reports for fill quality and execution drift before increasing size.
+1. After demo (or testnet) looks good, set **live** keys in `.env`: `BYBIT_ENV=live`, `BYBIT_LIVE_API_KEY`, `BYBIT_LIVE_API_SECRET` (or legacy pair), and set `mode: live` with **small** size.
+2. Set `burn_in_phase: live_small` and run. Review evaluation reports for fill quality and execution drift before increasing size.
 
 ## Readiness
 
@@ -98,11 +88,21 @@ Readiness is computed from:
 **Classifications:**
 
 - **NOT_READY** – e.g. kill switch triggered in window.
-- **READY_FOR_TESTNET_CONTINUATION** – no breaches; OK to continue testnet.
+- **READY_FOR_TESTNET_CONTINUATION** / **READY_FOR_DEMO_CONTINUATION** – no breaches; OK to continue demo/testnet.
 - **READY_FOR_SMALL_LIVE** – no breaches; OK for small live (review metrics).
 - **NEEDS_REVIEW** – protection mismatch, execution drift, gate breach, or degradation in window; operator should review before scaling up.
 
 No automatic mode escalation; the operator decides when to change phase or limits.
+
+## Promote environment (Demo -> Live)
+
+Use the **promote-env** helper to switch from Demo to guarded Live only when readiness passes and you explicitly confirm:
+
+- **Preview:** `python run_bot.py promote-env` — shows current env, readiness, live credentials; no changes.
+- **Apply:** `python run_bot.py promote-env --confirm-live` — backs up `.env` and config, sets `BYBIT_ENV=live` and `burn_in_phase: live_small`.
+- **Optional:** `--reason "reason"`, `--start-live` (prints start command after switch).
+
+The helper **does not** auto-promote: it requires `--confirm-live`. It checks readiness is READY_FOR_SMALL_LIVE and live credentials exist. Artifacts: `artifacts/validation/env_promotion_<ts>.json` and `.md`. Roll back by restoring the `.bak.<ts>` files or setting `BYBIT_ENV=demo` and `burn_in_phase: demo` again.
 
 ## Metrics to review before increasing size
 
@@ -152,4 +152,4 @@ python3 run_bot.py report
 python3 run_bot.py health
 ```
 
-See also **docs/DEPLOYMENT_AND_HEALTHCHECKS.md**, **docs/MONITORING_AND_ALERTING.md**, and **docs/BURN_IN_OPERATOR_RUNBOOK.md** for the operator script workflow (install, validate, testnet burn-in, small-live, incident stop, evaluate, optimize, shadow, promote/rollback).
+See also **docs/DEPLOYMENT_AND_HEALTHCHECKS.md**, **docs/MONITORING_AND_ALERTING.md**, and **docs/BURN_IN_OPERATOR_RUNBOOK.md** for the operator script workflow (install, validate, **demo** burn-in, small-live, incident stop, evaluate, optimize, shadow, promote/rollback).

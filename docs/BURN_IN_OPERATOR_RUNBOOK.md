@@ -1,6 +1,6 @@
 # Burn-in Operator Runbook
 
-Step-by-step operator workflow for Ubuntu CLI: install, validate, testnet burn-in, small-live readiness, guarded live start, and incident stop/rollback.
+Step-by-step operator workflow for Ubuntu CLI: install, validate, **demo burn-in** (Bybit Demo Trading), small-live readiness, guarded live start, and incident stop/rollback.
 
 ## Prerequisites
 
@@ -34,15 +34,15 @@ Install script will:
 
 - **API keys (paper/live):**  
   `python bootstrap_config.py`  
-  Or create `.env` with `BYBIT_API_KEY`, `BYBIT_API_SECRET`, `BYBIT_TESTNET=true|false`.
+  Prompts for **demo** keys (Bybit Demo Trading; create from mainnet account → Demo Trading), optionally **live** keys (dual-key). Writes `BYBIT_ENV=demo|live`, `BYBIT_DEMO_API_KEY/SECRET`, `BYBIT_LIVE_API_KEY/SECRET`. Or create `.env` manually (see `.env.example`). Dual-key is recommended; legacy `BYBIT_API_KEY`/`BYBIT_API_SECRET` is supported as fallback. **Do not** use Demo Trading on Testnet; use official Bybit Demo (api-demo.bybit.com, stream-demo.bybit.com for private; public data from mainnet stream.bybit.com).
 
 - **Config:**  
-  Edit `config/config.yaml`: set `mode` (e.g. `paper` for testnet), and optionally enable burn-in:
+  Edit `config/config.yaml`: set `mode` (e.g. `paper` for demo), and optionally enable burn-in:
 
 ```yaml
 burn_in:
   burn_in_enabled: true
-  burn_in_phase: testnet
+  burn_in_phase: demo
   burn_in_max_trades_per_day: 20
   burn_in_max_notional_usdt: 5000.0
   # ... (see config/config.yaml.example)
@@ -65,7 +65,7 @@ Or:
 ./scripts/validate_env.sh
 ```
 
-Validation checks: config exists and loads, `.env` present for paper/live, DB and artifact dirs writable, mode/testnet consistency, active strategy in registry. Exits 1 on errors; warnings are printed but do not fail.
+Validation checks: config exists and loads, `.env` present for paper/live, DB and artifact dirs writable, mode/env consistency (BYBIT_ENV), active strategy in registry. Exits 1 on errors; warnings are printed but do not fail.
 
 ---
 
@@ -83,9 +83,9 @@ sudo systemctl start money-flow-momentum
 
 ---
 
-## 5. Testnet burn-in start
+## 5. Demo burn-in start (recommended)
 
-1. Set in config: `burn_in_enabled: true`, `burn_in_phase: testnet`, and testnet keys (e.g. `BYBIT_TESTNET=true`).
+1. Set in config: `burn_in_enabled: true`, `burn_in_phase: demo`, and **demo** keys in `.env`: `BYBIT_ENV=demo`, `BYBIT_DEMO_API_KEY`, `BYBIT_DEMO_API_SECRET` (create from mainnet account → Demo Trading; do not use testnet for demo).
 2. Run:
 
 ```bash
@@ -97,7 +97,7 @@ With options:
 - `--no-backup` — skip config backup before start
 - `--foreground` — run bot in foreground instead of starting systemd
 
-Script will: validate env, confirm burn-in phase=testnet, optionally back up config, start service (or run in foreground), then print monitor commands.
+Script will: validate env, confirm burn-in phase=demo (or testnet for legacy) and BYBIT_ENV match, optionally back up config, start service (or run in foreground), then print monitor commands. **Demo** uses REST `https://api-demo.bybit.com`, private WS `wss://stream-demo.bybit.com`, and **mainnet public** market data `wss://stream.bybit.com` (per Bybit docs).
 
 **Monitor commands (printed by script):**
 
@@ -110,9 +110,9 @@ python run_bot.py burnin readiness --output artifacts/burnin
 
 ---
 
-## 6. Testnet burn-in check
+## 6. Burn-in check
 
-Run regularly during testnet:
+Run regularly during demo (or testnet):
 
 ```bash
 ./scripts/check_burnin.sh
@@ -135,8 +135,8 @@ python run_bot.py burnin readiness --output artifacts/burnin
 ## 7. Readiness interpretation
 
 - **NOT_READY** — e.g. kill switch in window; do not proceed.
-- **READY_FOR_TESTNET_CONTINUATION** — OK to keep testnet running.
-- **READY_FOR_SMALL_LIVE** — No critical issues; operator may proceed to small-live **after** consciously switching phase (see below).
+- **READY_FOR_TESTNET_CONTINUATION** / **READY_FOR_DEMO_CONTINUATION** — OK to keep demo/testnet running.
+- **READY_FOR_SMALL_LIVE** — No critical issues; operator may proceed to small-live **after** consciously switching phase and BYBIT_ENV=live (see below).
 - **NEEDS_REVIEW** — Protection mismatch, execution drift, gate breach, or degradation; review artifacts and fix before scaling.
 
 Readiness artifacts: `artifacts/burnin/readiness_*.json`, `readiness_*.md`.
@@ -145,7 +145,7 @@ Readiness artifacts: `artifacts/burnin/readiness_*.json`, `readiness_*.md`.
 
 ## 8. Small-live readiness check (go/no-go)
 
-**Do not** auto-switch phase. Operator must set `burn_in_phase: live_small` in config when ready.
+**Do not** auto-switch phase. Operator must set `burn_in_phase: live_small` in config **and** `BYBIT_ENV=live` in `.env` when ready.
 
 ```bash
 ./scripts/check_small_live_ready.sh
@@ -154,6 +154,7 @@ Readiness artifacts: `artifacts/burnin/readiness_*.json`, `readiness_*.md`.
 Script checks:
 
 - `burn_in_phase` is `live_small` (fails if not set by operator)
+- `BYBIT_ENV=live` and live keys present
 - Runs burn-in readiness and report
 - Produces **GO** or **NO-GO** summary
 
@@ -161,9 +162,54 @@ If GO, proceed to guarded small-live start. If NO-GO, fix phase, readiness, or c
 
 ---
 
+## 8a. Promote environment (Demo -> Live) — safe helper
+
+After demo burn-in and readiness passes, use the **promote-environment** helper to switch from Demo to Live. It does **not** auto-promote: you must run with `--confirm-live` to apply.
+
+**Preview (default):** Shows current environment, readiness, live credentials, and what would change. No files are modified.
+
+```bash
+python run_bot.py promote-env
+# or
+./scripts/promote_demo_to_live.sh
+```
+
+**Apply the switch** (after readiness is READY_FOR_SMALL_LIVE and live keys are set):
+
+```bash
+python run_bot.py promote-env --confirm-live
+# Optional reason:
+python run_bot.py promote-env --confirm-live --reason "demo burn-in passed"
+```
+
+**Optional: apply and then start guarded live** (still requires you to run start script; the helper only prepares env):
+
+```bash
+python run_bot.py promote-env --confirm-live --start-live
+```
+
+**What the helper checks:**
+
+- Current environment is Demo (`BYBIT_ENV=demo`).
+- Burn-in readiness is **READY_FOR_SMALL_LIVE** (rejects NOT_READY, NEEDS_REVIEW).
+- Live credentials exist (`BYBIT_LIVE_API_KEY` / `BYBIT_LIVE_API_SECRET` or legacy).
+- Burn-in is enabled and phase is demo or testnet.
+
+**What the helper changes (only when `--confirm-live`):**
+
+- Backs up `.env` and `config/config.yaml` (unless `--no-backup`).
+- Sets `BYBIT_ENV=live` in `.env`.
+- Sets `burn_in_phase: live_small` in config.
+
+**Artifact:** Each promotion is recorded under `artifacts/validation/env_promotion_<timestamp>.json` and `.md` (timestamp, previous/new env and phase, files changed, backups).
+
+**Roll back manually:** Restore `.env` and config from the `.bak.<timestamp>` files created in the same directory, or set `BYBIT_ENV=demo` and `burn_in_phase: demo` again.
+
+---
+
 ## 9. Guarded small-live start
 
-1. In config: `burn_in_enabled: true`, `burn_in_phase: live_small`, mainnet keys if live, and stricter limits as desired.
+1. In config: `burn_in_enabled: true`, `burn_in_phase: live_small`. In `.env`: `BYBIT_ENV=live`, `BYBIT_LIVE_API_KEY`, `BYBIT_LIVE_API_SECRET`.
 2. Start:
 
 ```bash
@@ -202,7 +248,7 @@ This: stops the service, prints last 80 lines of `logs/bot.log`, latest burn-in 
 
 Runs `python run_bot.py config rollback --reason "reason text"` after stop. Does not auto-flatten positions.
 
-**Next steps (printed):** Review logs and artifacts; fix issues; then `./scripts/start_testnet_burnin.sh` or `./scripts/start_small_live.sh` as appropriate.
+**Next steps (printed):** Review logs and artifacts; fix issues; then `./scripts/start_testnet_burnin.sh` (demo burn-in) or `./scripts/start_small_live.sh` as appropriate.
 
 ---
 
@@ -213,6 +259,7 @@ Runs `python run_bot.py config rollback --reason "reason text"` after stop. Does
 | Bot log (systemd) | `logs/bot.log` |
 | Heartbeat | `artifacts/heartbeat.json` |
 | Burn-in readiness | `artifacts/burnin/readiness_*.json`, `readiness_*.md` |
+| **Environment promotion** | `artifacts/validation/env_promotion_<ts>.json`, `env_promotion_<ts>.md` |
 | Burn-in bundle | `artifacts/burnin/bundle_<ts>/` (from `generate_burnin_bundle.sh`) |
 | Config backups | `artifacts/validation/` or `artifacts/validation/backups/<ts>/` with `--timestamp` |
 | DB | `data/bot.db` (or `database_path` in config) |
@@ -241,7 +288,7 @@ sudo systemctl restart money-flow-momentum
 - **Config backup:**  
   `./scripts/backup_config.sh` or `./scripts/backup_config.sh --timestamp`
 
-- **Runtime mode (mode, phase, testnet, strategy):**  
+- **Runtime mode (mode, phase, BYBIT_ENV, strategy):**  
   `./scripts/show_runtime_mode.sh` or `python run_bot.py show-runtime-mode`
 
 - **Burn-in bundle (status, report, burnin status/report/readiness → one dir):**  
@@ -254,7 +301,7 @@ Can be run manually or from cron/systemd timer for periodic snapshots.
 
 ## 14. Evaluate, optimize, shadow, promote (after burn-in / live)
 
-After testnet or small-live run, use Stage 3 CLI for evaluation, optimization, shadow comparison, and promotion:
+After demo or small-live run, use Stage 3 CLI for evaluation, optimization, shadow comparison, and promotion:
 
 - **Evaluation** (writes to `artifacts/evaluations/`):  
   `python run_bot.py evaluate [--from-date YYYY-MM-DD] [--to-date YYYY-MM-DD] [--config-id <id>]`
@@ -282,7 +329,10 @@ See **docs/STAGE3_ADAPTIVE_FRAMEWORK.md** and **docs/OPTIMIZATION_WORKFLOW.md** 
 |--------|---------|
 | Install | `./install.sh` |
 | Validate | `source venv/bin/activate && python run_bot.py validate` or `./scripts/validate_env.sh` |
-| Start testnet burn-in | `./scripts/start_testnet_burnin.sh` |
+| Show runtime mode | `python run_bot.py show-runtime-mode` |
+| **Preview promote Demo -> Live** | `python run_bot.py promote-env` or `./scripts/promote_demo_to_live.sh` |
+| **Confirm promote Demo -> Live** | `python run_bot.py promote-env --confirm-live` |
+| Start demo burn-in | `./scripts/start_testnet_burnin.sh` (requires BYBIT_ENV=demo, burn_in_phase: demo) |
 | Check burn-in | `./scripts/check_burnin.sh` |
 | Small-live readiness | `./scripts/check_small_live_ready.sh` |
 | Start guarded live | `./scripts/start_small_live.sh` |

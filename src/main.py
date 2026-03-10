@@ -9,7 +9,7 @@ from typing import Optional, Any
 import typer
 from loguru import logger
 
-from src.config.config import load_config, Config, EnvSettings
+from src.config.config import load_config, Config, EnvSettings, resolve_bybit_credentials, get_bybit_env
 from src.config.versioning import get_active_config_id, ensure_stage3_schema, load_config_from_artifact, register_config_version
 from src.exchange.bybit_client import BybitClient
 from src.exchange.ws_shard import PublicWSShardManager
@@ -70,15 +70,26 @@ class TradingBot:
         self._health: Optional[Any] = None
         self._heartbeat_path: Optional[Path] = None
         self._last_heartbeat_write_ts: float = 0.0
+        self._effective_api_key: str = ""  # set in _init_components; never log
 
     def _init_components(self) -> None:
-        api_key = self.env.bybit_api_key or ""
-        api_secret = self.env.bybit_api_secret or ""
-        testnet = self.env.bybit_testnet
+        env_type = get_bybit_env(self.env)
+        api_key, api_secret, is_legacy, _ = resolve_bybit_credentials(self.env, env_type)
+        self._effective_api_key = api_key
+        self._bybit_env_type = env_type  # demo | live | testnet
+        cred_mode = "legacy" if is_legacy else "dual_key"
+        log.info("Bybit environment=%s credential_mode=%s", env_type, cred_mode)
+        if is_legacy:
+            log.warning("Using legacy BYBIT_API_KEY/SECRET; set BYBIT_DEMO_API_KEY/SECRET and BYBIT_LIVE_API_KEY/SECRET for dual-key mode")
+        if env_type == "demo":
+            log.info("Demo mode: REST/private WS = demo endpoints; public WS = mainnet")
+        testnet = env_type == "testnet"
+        demo = env_type == "demo"
         self._client = BybitClient(
             api_key=api_key,
             api_secret=api_secret,
             testnet=testnet,
+            demo=demo,
             config=self.config.exchange,
         )
         self._universe = UniverseManager(self._client, self.config.universe)
@@ -523,12 +534,13 @@ class TradingBot:
         syms_ws = self._universe.symbols[:200]
         self._ws_shards = PublicWSShardManager(
             symbols=syms_ws, max_symbols_per_connection=max_per,
-            testnet=self.env.bybit_testnet, on_trade=self._on_trade, on_ticker=self._on_ticker,
+            testnet=self._bybit_env_type == "testnet",
+            on_trade=self._on_trade, on_ticker=self._on_ticker,
         )
         self._ws_shards.build_shards()
         self._ws_shards.start_all()
 
-        if self.env.bybit_api_key and not self.config.dry_run:
+        if self._effective_api_key and not self.config.dry_run:
             try:
                 self._client.start_private_ws(
                     on_order=self._on_order,
@@ -648,7 +660,7 @@ class TradingBot:
 
                 if self._health:
                     self._health.report_ok("score_entry")
-                if self._client and self.env.bybit_api_key and self._health:
+                if self._client and self._effective_api_key and self._health:
                     self._health.report_ok("private_ws")
                 if self._heartbeat_path and self._health and (now_sec - self._last_heartbeat_write_ts >= 30.0):
                     self._last_heartbeat_write_ts = now_sec
@@ -1077,7 +1089,7 @@ def run(
         rotation=config.logging.rotation,
         retention=config.logging.retention,
     )
-    logger.info(f"Starting bot mode={config.mode} dry_run={config.dry_run} testnet={env.bybit_testnet}")
+    logger.info("Starting bot mode=%s dry_run=%s env=%s", config.mode, config.dry_run, get_bybit_env(env))
     bot = TradingBot(config, env)
 
     def shutdown(sig, frame):

@@ -19,10 +19,10 @@ fi
 echo "1. Validating environment..."
 python run_bot.py validate || exit 1
 
-echo "2. Checking burn_in_enabled=true, burn_in_phase=live_small..."
+echo "2. Checking burn_in_enabled=true, burn_in_phase=live_small, LIVE environment and live keys..."
 python -c "
 from pathlib import Path
-from src.config.config import load_config
+from src.config.config import load_config, resolve_bybit_credentials, get_bybit_env
 c, env = load_config(Path('config/config.yaml'))
 b = getattr(c, 'burn_in', None)
 if not b or not getattr(b, 'burn_in_enabled', False):
@@ -32,13 +32,19 @@ phase = getattr(b, 'burn_in_phase', '')
 if phase != 'live_small':
     print('ERROR: burn_in.burn_in_phase must be live_small. Current:', phase)
     exit(1)
-# Mainnet: exchange.testnet should be false for real live
-if c.exchange.testnet:
-    print('WARN: exchange.testnet is true. For real mainnet set exchange.testnet: false')
-if not env.bybit_api_key or not env.bybit_api_secret:
-    print('ERROR: BYBIT_API_KEY and BYBIT_API_SECRET required for live.')
+env_type = get_bybit_env(env)
+if env_type != 'live':
+    print('ERROR: BYBIT_ENV must be live for guarded live. Set BYBIT_ENV=live in .env')
     exit(1)
-print('OK: burn_in enabled, phase=live_small, API keys present')
+key, secret, legacy, _ = resolve_bybit_credentials(env, 'live')
+if not key or not secret:
+    print('ERROR: Live credentials missing. Set BYBIT_LIVE_API_KEY/SECRET (or legacy BYBIT_API_KEY/SECRET) in .env')
+    exit(1)
+if c.exchange.testnet:
+    print('WARN: exchange.testnet is true (overridden by BYBIT_ENV=live).')
+if legacy:
+    print('WARN: Using legacy single-key mode. Recommend dual-key: BYBIT_DEMO_API_KEY/SECRET and BYBIT_LIVE_API_KEY/SECRET')
+print('OK: burn_in enabled, phase=live_small, environment=LIVE, live keys present')
 " || exit 1
 
 echo "3. Starting service..."

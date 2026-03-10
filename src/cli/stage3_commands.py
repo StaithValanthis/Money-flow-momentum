@@ -197,7 +197,7 @@ def register_stage3_cli(app: typer.Typer) -> None:
         config_path: Optional[Path] = typer.Option(None, "--config", "-c", help="Path to config.yaml"),
         require_api_keys: bool = typer.Option(True, "--require-api-keys/--no-require-api-keys"),
     ) -> None:
-        """Validate environment and config: config, .env, dirs, mode/testnet, strategy."""
+        """Validate environment and config: config, .env, dirs, mode/env, strategy."""
         cfg = config_path or Path("config/config.yaml")
         result: ValidationResult = validate_environment(config_path=cfg, require_api_keys_for_live=require_api_keys)
         for e in result.errors:
@@ -206,7 +206,7 @@ def register_stage3_cli(app: typer.Typer) -> None:
             typer.echo(f"WARN: {w}")
         if result.ok:
             typer.echo("Validation OK.")
-            typer.echo("Ready for: testnet burn-in (set burn_in_enabled: true, burn_in_phase: testnet in config). For guarded small-live: set phase: live_small after testnet passes; then ./scripts/check_small_live_ready.sh")
+            typer.echo("Ready for: demo burn-in (BYBIT_ENV=demo, burn_in_enabled: true, burn_in_phase: demo). For guarded small-live: set phase: live_small and BYBIT_ENV=live; then ./scripts/check_small_live_ready.sh")
             raise typer.Exit(0)
         typer.echo("Validation failed.")
         raise typer.Exit(1)
@@ -343,25 +343,133 @@ def register_stage3_cli(app: typer.Typer) -> None:
     def show_runtime_mode(
         config_path: Optional[Path] = typer.Option(None, "--config", "-c"),
     ) -> None:
-        """Show current mode, burn-in phase, active config, strategy; warn on mode/phase mismatch."""
+        """Show current mode, burn-in phase, credential mode (dual-key vs legacy), selected key availability."""
+        from src.config.config import resolve_bybit_credentials, get_bybit_env
+        from src.cli.validate_env import _has_dual_key_demo, _has_dual_key_live, _has_legacy_keys
         config, env = load_config(config_path)
+        env_type = get_bybit_env(env)
+        api_key, api_secret, is_legacy, _ = resolve_bybit_credentials(env, env_type)
+        selected_env = env_type.upper()  # DEMO | LIVE | TESTNET
+        typer.echo(f"selected_environment: {selected_env}")
+        typer.echo(f"credential_mode: {'legacy' if is_legacy else 'dual_key'}")
+        typer.echo(f"selected_key_pair: {'present' if (api_key and api_secret) else 'missing'}")
+        dual_demo = _has_dual_key_demo(env)
+        dual_live = _has_dual_key_live(env)
+        typer.echo(f"dual_key_configured: demo={dual_demo} live={dual_live}")
         typer.echo(f"mode: {config.mode}")
         typer.echo(f"exchange.testnet: {config.exchange.testnet}")
-        typer.echo(f"BYBIT_TESTNET (env): {getattr(env, 'bybit_testnet', 'N/A')}")
+        typer.echo(f"BYBIT_ENV: {getattr(env, 'bybit_env', '') or 'N/A'}")
         burn_in = getattr(config, "burn_in", None)
         if burn_in:
             typer.echo(f"burn_in_enabled: {getattr(burn_in, 'burn_in_enabled', False)}")
-            typer.echo(f"burn_in_phase: {getattr(burn_in, 'burn_in_phase', 'testnet')}")
+            typer.echo(f"burn_in_phase: {getattr(burn_in, 'burn_in_phase', 'demo')}")
         else:
             typer.echo("burn_in_enabled: false")
         from src.config.versioning import get_active_config_id
         aid = get_active_config_id(config.database_path)
         typer.echo(f"active_config_id: {aid or 'none'}")
         typer.echo(f"active_strategy: {getattr(config, 'active_strategy', 'flow_impulse')}")
-        if config.mode == "live" and burn_in and getattr(burn_in, "burn_in_phase", "") == "testnet":
-            typer.echo("WARN: mode is live but burn_in_phase is testnet. Set burn_in_phase to live_small for guarded live.")
+        if is_legacy:
+            typer.echo("WARN: Using legacy single-key. Set BYBIT_DEMO_API_KEY/SECRET and BYBIT_LIVE_API_KEY/SECRET for dual-key.")
+        if config.mode == "live" and burn_in and getattr(burn_in, "burn_in_phase", "") in ("demo", "testnet"):
+            typer.echo("WARN: mode is live but burn_in_phase is demo/testnet. Set burn_in_phase to live_small for guarded live.")
         if burn_in and getattr(burn_in, "burn_in_enabled", False) is False:
             typer.echo("WARN: burn_in_enabled is false during validation phase.")
+
+    @app.command("promote-env")
+    def promote_env(
+        config_path: Optional[Path] = typer.Option(None, "--config", "-c", help="Path to config.yaml"),
+        env_path: Optional[Path] = typer.Option(None, "--env", "-e", help="Path to .env"),
+        confirm_live: bool = typer.Option(False, "--confirm-live", help="Confirm switch from Demo to Live (required to apply changes)"),
+        start_live: bool = typer.Option(False, "--start-live", help="After switching, start guarded live service (only with --confirm-live)"),
+        reason: Optional[str] = typer.Option(None, "--reason", help="Reason for promotion (e.g. 'demo burn-in passed')"),
+        no_backup: bool = typer.Option(False, "--no-backup", help="Do not backup .env and config before changing"),
+        window_hours: float = typer.Option(24.0, "--window", help="Readiness window hours"),
+    ) -> None:
+        """Safe promote environment: Demo -> guarded Live. Preview by default; use --confirm-live to apply."""
+        from src.cli.promote_env import (
+            run_promote_env_prechecks,
+            apply_promote_env,
+            write_promotion_artifact,
+        )
+        cfg = config_path or Path("config/config.yaml")
+        env_file = env_path or Path(".env")
+
+        precheck = run_promote_env_prechecks(
+            config_path=cfg,
+            env_path=env_file,
+            window_hours=window_hours,
+        )
+
+        typer.echo("=== Promote environment (Demo -> Live) ===")
+        typer.echo("current_environment: %s" % precheck.current_env.upper())
+        typer.echo("live_credentials_present: %s" % precheck.live_credentials_present)
+        if precheck.readiness:
+            typer.echo("readiness: %s" % precheck.readiness.classification)
+            typer.echo("readiness_message: %s" % (precheck.readiness.message or ""))
+        for w in precheck.warnings:
+            typer.echo("WARN: %s" % w)
+        for e in precheck.errors:
+            typer.echo("ERROR: %s" % e)
+
+        if not precheck.ok:
+            typer.echo("")
+            typer.echo("Prechecks failed. Fix errors above before promoting. No files were changed.")
+            raise typer.Exit(1)
+
+        typer.echo("")
+        typer.echo("Files that would be changed: .env (BYBIT_ENV=live), %s (burn_in_phase=live_small)" % cfg)
+        if not confirm_live:
+            typer.echo("")
+            typer.echo("Preview only. To apply the switch, run:")
+            typer.echo("  python run_bot.py promote-env --confirm-live")
+            if reason:
+                typer.echo("  python run_bot.py promote-env --confirm-live --reason \"%s\"" % reason)
+            typer.echo("To also start guarded live after switching:")
+            typer.echo("  python run_bot.py promote-env --confirm-live --start-live")
+            raise typer.Exit(0)
+
+        ok, report = apply_promote_env(
+            config_path=cfg,
+            env_path=env_file,
+            backup=not no_backup,
+            reason=reason,
+        )
+        report["start_live_requested"] = start_live
+        if precheck.readiness:
+            report["readiness_used"] = precheck.readiness.classification
+        if not ok:
+            typer.echo("Promotion failed: %s" % report.get("error", "unknown"))
+            raise typer.Exit(1)
+
+        art_path = write_promotion_artifact(report)
+        typer.echo("")
+        typer.echo("Promotion applied.")
+        typer.echo("  Files changed: %s" % ", ".join(report.get("files_changed", [])))
+        typer.echo("  Backups: %s" % ", ".join(report.get("backups_created", [])) or "none")
+        typer.echo("  Artifact: %s" % art_path)
+        if start_live:
+            typer.echo("")
+            typer.echo("Starting guarded live...")
+            import subprocess
+            import sys
+            r = subprocess.run(
+                [sys.executable, "run_bot.py", "validate", "--config", str(cfg)],
+                capture_output=True,
+                text=True,
+                cwd=Path.cwd(),
+            )
+            if r.returncode != 0:
+                typer.echo("Validation failed after switch. Run: python run_bot.py validate")
+                raise typer.Exit(1)
+            typer.echo("Run guarded live with: ./scripts/start_small_live.sh (or python run_bot.py run)")
+            typer.echo("Monitor: ./scripts/check_burnin.sh  python run_bot.py health")
+        else:
+            typer.echo("")
+            typer.echo("Next: start guarded live with:")
+            typer.echo("  ./scripts/start_small_live.sh")
+            typer.echo("Or in foreground: ./scripts/start_small_live.sh --foreground")
+            typer.echo("Then: ./scripts/check_burnin.sh  python run_bot.py health")
 
     @app.command()
     def status(
@@ -369,7 +477,10 @@ def register_stage3_cli(app: typer.Typer) -> None:
         heartbeat_path: Optional[Path] = typer.Option(None, "--heartbeat"),
     ) -> None:
         """Diagnostics: active config, DB path, Stage 5, strategy, artifact dirs, last heartbeat freshness."""
-        config, _ = load_config(config_path)
+        config, env = load_config(config_path)
+        from src.config.config import get_bybit_env
+        env_type = get_bybit_env(env)
+        typer.echo(f"selected_environment: {env_type.upper()}")
         from src.config.versioning import get_active_config_id
         aid = get_active_config_id(config.database_path)
         typer.echo(f"Active config: {aid or 'none'}")
@@ -401,7 +512,7 @@ def register_stage3_cli(app: typer.Typer) -> None:
             typer.echo("No heartbeat file (runtime state unknown)")
         burn_in = getattr(config, "burn_in", None)
         if burn_in and getattr(burn_in, "burn_in_enabled", False):
-            typer.echo(f"Burn-in: enabled  phase={getattr(burn_in, 'burn_in_phase', 'testnet')}")
+            typer.echo(f"Burn-in: enabled  phase={getattr(burn_in, 'burn_in_phase', 'demo')}")
 
     @app.command()
     def report(
@@ -409,7 +520,10 @@ def register_stage3_cli(app: typer.Typer) -> None:
         heartbeat_path: Optional[Path] = typer.Option(None, "--heartbeat"),
     ) -> None:
         """Summary: active config, degradation events, promotions, loop health (from heartbeat if present)."""
-        config, _ = load_config(config_path)
+        config, env = load_config(config_path)
+        from src.config.config import get_bybit_env
+        env_type = get_bybit_env(env)
+        typer.echo(f"selected_environment: {env_type.upper()}")
         db = Database(config.database_path)
         conn = db._get_conn()
         from src.config.versioning import get_active_config_id
@@ -440,7 +554,7 @@ def register_stage3_cli(app: typer.Typer) -> None:
             typer.echo("No heartbeat file; runtime loop state unknown.")
         burn_in = getattr(config, "burn_in", None)
         if burn_in and getattr(burn_in, "burn_in_enabled", False):
-            typer.echo(f"Burn-in: enabled  phase={getattr(burn_in, 'burn_in_phase', 'testnet')}")
+            typer.echo(f"Burn-in: enabled  phase={getattr(burn_in, 'burn_in_phase', 'demo')}")
         db.close()
 
     # --- Burn-in validation ---
@@ -456,7 +570,7 @@ def register_stage3_cli(app: typer.Typer) -> None:
             typer.echo("Burn-in config not found (use defaults)")
             return
         typer.echo(f"Burn-in enabled: {getattr(burn, 'burn_in_enabled', False)}")
-        typer.echo(f"Phase: {getattr(burn, 'burn_in_phase', 'testnet')}")
+        typer.echo(f"Phase: {getattr(burn, 'burn_in_phase', 'demo')}")
         typer.echo(f"Max trades/day: {getattr(burn, 'burn_in_max_trades_per_day', 20)}")
         typer.echo(f"Max notional/day: {getattr(burn, 'burn_in_max_notional_usdt', 5000)}")
         db = Database(config.database_path)
@@ -506,7 +620,7 @@ def register_stage3_cli(app: typer.Typer) -> None:
         db = Database(config.database_path)
         hb_path = heartbeat_path or Path("artifacts/heartbeat.json")
         burn = getattr(config, "burn_in", None)
-        phase = getattr(burn, "burn_in_phase", "testnet") if burn else "testnet"
+        phase = getattr(burn, "burn_in_phase", "demo") if burn else "demo"
         from src.validation.readiness import compute_readiness
         from src.config.versioning import get_active_config_id
         config_id = get_active_config_id(config.database_path)

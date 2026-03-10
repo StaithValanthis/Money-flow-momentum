@@ -1,4 +1,4 @@
-"""Environment and config validation for install/run prerequisites."""
+"""Environment and config validation for install/run prerequisites. Supports dual-key (demo/live) and demo-first burn-in."""
 
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -16,13 +16,29 @@ class ValidationResult:
     warnings: list[str] = field(default_factory=list)
 
 
+def _has_dual_key_demo(env: "EnvSettings") -> bool:
+    return bool((getattr(env, "bybit_demo_api_key", "") or "").strip() and (getattr(env, "bybit_demo_api_secret", "") or "").strip())
+
+
+def _has_dual_key_live(env: "EnvSettings") -> bool:
+    return bool((getattr(env, "bybit_live_api_key", "") or "").strip() and (getattr(env, "bybit_live_api_secret", "") or "").strip())
+
+
+def _has_dual_key_testnet(env: "EnvSettings") -> bool:
+    return bool((getattr(env, "bybit_testnet_api_key", "") or "").strip() and (getattr(env, "bybit_testnet_api_secret", "") or "").strip())
+
+
+def _has_legacy_keys(env: "EnvSettings") -> bool:
+    return bool((getattr(env, "bybit_api_key", "") or "").strip() and (getattr(env, "bybit_api_secret", "") or "").strip())
+
+
 def validate_environment(
     config_path: Optional[Path] = None,
     require_api_keys_for_live: bool = True,
 ) -> ValidationResult:
     """
-    Check config exists, .env if needed, dirs writable, mode/testnet consistency,
-    active strategy in registry. Fail clearly when prerequisites are missing.
+    Check config exists, .env if needed, dirs writable, mode/env consistency,
+    active strategy in registry. Validates dual-key or legacy credentials for selected env (demo/live/testnet).
     """
     errors: list[str] = []
     warnings: list[str] = []
@@ -33,13 +49,13 @@ def validate_environment(
         return ValidationResult(ok=False, errors=errors, warnings=warnings)
 
     try:
-        from src.config.config import load_config
+        from src.config.config import load_config, resolve_bybit_credentials, get_bybit_env
         config, env = load_config(cfg_path)
+        env_type = get_bybit_env(env)
     except Exception as e:
         errors.append(f"Config load failed: {e}")
         return ValidationResult(ok=False, errors=errors, warnings=warnings)
 
-    # .env for paper/live when we need API
     env_path = Path(".env")
     if not env_path.exists():
         if config.mode in ("paper", "live") and require_api_keys_for_live:
@@ -47,8 +63,25 @@ def validate_environment(
         else:
             warnings.append(".env not found; required for paper/live mode")
     else:
-        if config.mode in ("paper", "live") and (not env.bybit_api_key or not env.bybit_api_secret):
-            errors.append(".env exists but BYBIT_API_KEY or BYBIT_API_SECRET missing")
+        api_key, api_secret, is_legacy, _ = resolve_bybit_credentials(env, None)
+        if config.mode in ("paper", "live"):
+            if not api_key or not api_secret:
+                errors.append(
+                    f"Selected environment is {env_type} but no credentials found. "
+                    f"Set BYBIT_DEMO_API_KEY/SECRET for demo or BYBIT_LIVE_API_KEY/SECRET for live (or legacy BYBIT_API_KEY/SECRET)."
+                )
+            else:
+                dual_demo = _has_dual_key_demo(env)
+                dual_live = _has_dual_key_live(env)
+                if is_legacy:
+                    warnings.append("Using legacy BYBIT_API_KEY/SECRET. Recommend dual-key: BYBIT_DEMO_API_KEY/SECRET and BYBIT_LIVE_API_KEY/SECRET.")
+                # Mismatches
+                if env_type == "demo" and not dual_demo and dual_live and not _has_legacy_keys(env):
+                    errors.append("BYBIT_ENV=demo but only BYBIT_LIVE_API_KEY/SECRET are set. Set BYBIT_DEMO_API_KEY/SECRET for demo burn-in.")
+                if env_type == "live" and not dual_live and dual_demo and not _has_legacy_keys(env):
+                    errors.append("BYBIT_ENV=live but only BYBIT_DEMO_API_KEY/SECRET are set. Set BYBIT_LIVE_API_KEY/SECRET for live.")
+                if env_type == "testnet":
+                    warnings.append("BYBIT_ENV=testnet is legacy. Recommend BYBIT_ENV=demo for burn-in (Bybit Demo Trading).")
 
     # DB and artifact dirs
     db_path = Path(config.database_path)
@@ -73,22 +106,23 @@ def validate_environment(
         except OSError as e:
             errors.append(f"Directory not writable: {name} - {e}")
 
-    # Mode / testnet consistency
-    testnet_env = getattr(env, "bybit_testnet", True)
+    # Mode / env consistency
     testnet_cfg = getattr(config.exchange, "testnet", True)
-    if testnet_env != testnet_cfg:
-        warnings.append(f"BYBIT_TESTNET (.env) and exchange.testnet (config) mismatch: {testnet_env} vs {testnet_cfg}")
+    if env_type == "testnet" and not testnet_cfg:
+        warnings.append("BYBIT_ENV=testnet but config exchange.testnet is false (config overridden by env)")
+    if env_type in ("demo", "live") and testnet_cfg:
+        warnings.append("exchange.testnet is true but env is %s (config overridden by env)" % env_type)
 
-    if config.mode == "live" and testnet_cfg:
-        warnings.append("mode is 'live' but exchange.testnet is true - confirm intended testnet usage")
+    if config.mode == "live" and env_type == "demo":
+        warnings.append("mode is 'live' but BYBIT_ENV=demo. For guarded live set BYBIT_ENV=live and live keys.")
 
     burn_in = getattr(config, "burn_in", None)
     if burn_in and getattr(burn_in, "burn_in_enabled", False):
-        phase = getattr(burn_in, "burn_in_phase", "testnet")
-        if config.mode == "live" and phase == "testnet":
-            warnings.append("Burn-in phase is 'testnet' but mode is 'live'. Set burn_in_phase to live_small for guarded live.")
-        if config.mode in ("paper", "live") and phase == "live_small" and testnet_cfg:
-            warnings.append("Burn-in phase is 'live_small' but exchange.testnet is true. Use mainnet for small live.")
+        phase = getattr(burn_in, "burn_in_phase", "demo")
+        if config.mode == "live" and phase in ("demo", "testnet"):
+            warnings.append("Burn-in phase is '%s' but mode is 'live'. Set burn_in_phase to live_small for guarded live." % phase)
+        if phase == "live_small" and env_type != "live":
+            warnings.append("Burn-in phase is 'live_small' but BYBIT_ENV is %s. Set BYBIT_ENV=live for small live." % env_type)
 
     # Active strategy in registry
     try:

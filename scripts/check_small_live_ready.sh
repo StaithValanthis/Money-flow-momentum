@@ -15,17 +15,25 @@ fi
 echo "=== Small-live readiness check ==="
 
 GO=1
-echo "1. Checking burn_in_phase is live_small (operator must have set this)..."
+echo "1. Checking burn_in_phase is live_small and LIVE credentials..."
 python -c "
 from pathlib import Path
-from src.config.config import load_config
-c, _ = load_config(Path('config/config.yaml'))
+from src.config.config import load_config, resolve_bybit_credentials, get_bybit_env
+c, env = load_config(Path('config/config.yaml'))
 b = getattr(c, 'burn_in', None)
 phase = getattr(b, 'burn_in_phase', '') if b else ''
 if phase != 'live_small':
     print('NO-GO: burn_in_phase is not live_small (current: %s). Set burn_in_phase: live_small in config when ready.' % phase)
     exit(1)
-print('OK: burn_in_phase=live_small')
+env_type = get_bybit_env(env)
+if env_type != 'live':
+    print('NO-GO: BYBIT_ENV is %s. Set BYBIT_ENV=live in .env for small-live.' % env_type)
+    exit(1)
+key, secret, _, _ = resolve_bybit_credentials(env, 'live')
+if not key or not secret:
+    print('NO-GO: Live credentials missing. Set BYBIT_LIVE_API_KEY/SECRET (or legacy BYBIT_API_KEY/SECRET) in .env')
+    exit(1)
+print('OK: burn_in_phase=live_small, environment=LIVE, live keys present')
 " || GO=0
 
 echo ""
