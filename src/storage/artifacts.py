@@ -44,6 +44,11 @@ def pipeline_dir(base: Optional[Path] = None) -> Path:
     return artifacts_root(base) / "pipeline"
 
 
+def automation_dir(base: Optional[Path] = None) -> Path:
+    """Directory for automation / orchestration artifacts."""
+    return artifacts_root(base) / "automation"
+
+
 def ensure_artifact_dirs(base: Optional[Path] = None) -> None:
     """Create standard artifact directories."""
     for d in (
@@ -55,6 +60,7 @@ def ensure_artifact_dirs(base: Optional[Path] = None) -> None:
         burnin_dir(base),
         validation_dir(base),
         pipeline_dir(base),
+        automation_dir(base),
     ):
         d.mkdir(parents=True, exist_ok=True)
 

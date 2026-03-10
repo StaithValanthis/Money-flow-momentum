@@ -261,6 +261,47 @@ class Database:
             log.debug(f"get_kill_switch_events: {e}")
             return []
 
+    # --- Automation / orchestration state ---
+
+    def get_automation_state(self) -> dict[str, Any]:
+        """Return latest automation_state row as dict, or {} if none."""
+        try:
+            conn = self._get_conn()
+            row = conn.execute("SELECT * FROM automation_state WHERE id = 1").fetchone()
+            return dict(row) if row else {}
+        except Exception as e:
+            log.debug(f"get_automation_state: {e}")
+            return {}
+
+    def upsert_automation_state(self, state: dict[str, Any]) -> None:
+        """Insert or replace automation_state row (id=1)."""
+        fields = [
+            "state",
+            "last_readiness_ts",
+            "last_readiness_classification",
+            "last_evaluation_run_id",
+            "last_evaluation_ts",
+            "last_optimizer_run_id",
+            "last_optimizer_ts",
+            "best_candidate_config_id",
+            "shadow_candidate_config_id",
+            "last_recommendation_status",
+            "blocked_reason",
+            "last_error",
+            "updated_ts",
+        ]
+        values = [state.get(f) for f in fields]
+        placeholders = ",".join("?" for _ in fields)
+        try:
+            with self._lock:
+                self._get_conn().execute(
+                    f"INSERT OR REPLACE INTO automation_state (id, {', '.join(fields)}) VALUES (1, {placeholders})",
+                    values,
+                )
+                self._get_conn().commit()
+        except Exception as e:
+            log.debug(f"upsert_automation_state: {e}")
+
     def insert_fill(
         self,
         ts: int,

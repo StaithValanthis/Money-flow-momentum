@@ -7,6 +7,7 @@ from typing import Optional, Any, Dict
 
 import typer
 
+from src.automation.orchestrator import get_automation_status, run_demo_automation_cycle
 from src.config.config import load_config
 from src.config.versioning import (
     list_config_versions,
@@ -878,6 +879,40 @@ def register_stage3_cli(app: typer.Typer) -> None:
         db.close()
 
     app.add_typer(burnin_app, name="burnin")
+
+    # --- Automation / orchestration ---
+    automation_app = typer.Typer(help="Demo automation / orchestration status and control")
+
+    @automation_app.command("cycle")
+    def automation_cycle_cmd(
+        config_path: Optional[Path] = typer.Option(None, "--config", "-c"),
+    ) -> None:
+        """Run a single automation cycle (safe to schedule periodically)."""
+        out = run_demo_automation_cycle(config_path=config_path)
+        snap = out.get("snapshot", {})
+        typer.echo(f"state: {snap.get('state')}")
+        typer.echo(f"last_recommendation_status: {snap.get('last_recommendation_status')}")
+
+    @automation_app.command("status")
+    def automation_status_cmd(
+        config_path: Optional[Path] = typer.Option(None, "--config", "-c"),
+    ) -> None:
+        """Show current automation snapshot and latest recommendation artifact."""
+        out = get_automation_status(config_path=config_path)
+        typer.echo(f"automation_enabled: {out.get('automation_enabled')}")
+        typer.echo(f"env: {out.get('env')}")
+        snap = out.get("snapshot", {}) or {}
+        typer.echo(f"state: {snap.get('state')}")
+        typer.echo(f"last_recommendation_status: {snap.get('last_recommendation_status')}")
+        typer.echo(f"best_candidate_config_id: {snap.get('best_candidate_config_id')}")
+        typer.echo(f"shadow_candidate_config_id: {snap.get('shadow_candidate_config_id')}")
+        artifact = out.get("artifact") or {}
+        if artifact:
+            typer.echo("latest_artifact: artifacts/automation/automation_status.json")
+        else:
+            typer.echo("latest_artifact: none")
+
+    app.add_typer(automation_app, name="automation")
 
     @app.command("post-burnin")
     def post_burnin(

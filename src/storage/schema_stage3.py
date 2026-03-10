@@ -168,6 +168,24 @@ CREATE TABLE IF NOT EXISTS degradation_events (
     FOREIGN KEY (config_id) REFERENCES config_versions(config_id)
 );
 CREATE INDEX IF NOT EXISTS idx_degradation_config_ts ON degradation_events(config_id, ts);
+
+-- Automation / orchestration state (single row, id=1)
+CREATE TABLE IF NOT EXISTS automation_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    state TEXT NOT NULL,
+    last_readiness_ts INTEGER,
+    last_readiness_classification TEXT,
+    last_evaluation_run_id TEXT,
+    last_evaluation_ts INTEGER,
+    last_optimizer_run_id TEXT,
+    last_optimizer_ts INTEGER,
+    best_candidate_config_id TEXT,
+    shadow_candidate_config_id TEXT,
+    last_recommendation_status TEXT,
+    blocked_reason TEXT,
+    last_error TEXT,
+    updated_ts INTEGER NOT NULL
+);
 """
 
 # Add config_id to existing tables via migrations (ALTER ADD COLUMN if not exists)

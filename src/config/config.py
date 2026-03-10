@@ -263,6 +263,23 @@ class BurnInConfig(BaseModel):
     burn_in_max_reconnect_per_hour: int = Field(default=5, ge=0, le=50)
 
 
+class AutomationConfig(BaseModel):
+    """Automation / orchestration for Demo burn-in and optimization."""
+
+    enabled: bool = False
+    demo_orchestration_enabled: bool = False
+    # Cadence / scheduling
+    readiness_check_interval_seconds: float = Field(default=900.0, ge=60.0, le=86400.0)
+    min_trades_for_auto_evaluation: int = Field(default=50, ge=0)
+    min_hours_between_evaluations: float = Field(default=6.0, ge=0.5, le=168.0)
+    min_hours_between_optimizer_runs: float = Field(default=24.0, ge=1.0, le=720.0)
+    # Behaviour flags
+    auto_start_shadow_for_best_candidate: bool = True
+    require_readiness_for_optimizer: bool = True
+    pause_on_kill_switch: bool = True
+    pause_on_burnin_gate_breach: bool = True
+
+
 class LoggingConfig(BaseModel):
     """Logging settings."""
 
@@ -289,6 +306,7 @@ class Config(BaseModel):
     risk: RiskConfig = Field(default_factory=RiskConfig)
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
     burn_in: BurnInConfig = Field(default_factory=BurnInConfig)
+    automation: AutomationConfig = Field(default_factory=AutomationConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     portfolio_exposure: PortfolioExposureConfig = Field(default_factory=PortfolioExposureConfig)
     database_path: str = "data/bot.db"

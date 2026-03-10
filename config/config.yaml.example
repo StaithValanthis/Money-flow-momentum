@@ -138,3 +138,16 @@ runner_trailing_enabled: true
 #   burn_in_fail_on_execution_drift: true
 #   burn_in_max_slippage_bps: 50.0
 #   burn_in_max_reconnect_per_hour: 5
+
+# Demo orchestration / automation (off by default; see docs for details)
+# automation:
+#   enabled: true
+#   demo_orchestration_enabled: true
+#   readiness_check_interval_seconds: 900.0
+#   min_trades_for_auto_evaluation: 50
+#   min_hours_between_evaluations: 6.0
+#   min_hours_between_optimizer_runs: 24.0
+#   auto_start_shadow_for_best_candidate: true
+#   require_readiness_for_optimizer: true
+#   pause_on_kill_switch: true
+#   pause_on_burnin_gate_breach: true
