@@ -169,10 +169,10 @@ class BybitClient:
             return self.http.get_orderbook(category=category, symbol=symbol, limit=limit)
         return self._retry_rest(_call)
 
-    def get_long_short_ratio(self, category: str = "linear", symbol: Optional[str] = None) -> dict:
-        """Fetch long/short ratio (linear only)."""
+    def get_long_short_ratio(self, category: str = "linear", symbol: Optional[str] = None, period: str = "5min") -> dict:
+        """Fetch long/short account ratio (linear only). Bybit requires period: 5min, 15min, 30min, 1h, 4h, 1d."""
         def _call():
-            params: dict = {"category": category}
+            params: dict = {"category": category, "period": period}
             if symbol:
                 params["symbol"] = symbol
             return self.http.get_long_short_ratio(**params)
@@ -192,12 +192,12 @@ class BybitClient:
         return self._retry_rest(_call)
 
     def set_position_mode(self, mode: int = 0) -> dict:
-        """Set position mode. 0 = merged (one-way), 3 = both sides."""
+        """Set position mode. 0 = merged (one-way), 3 = both sides. Uses coin=USDT for linear (Bybit requires symbol or coin)."""
         def _call():
             return self.http.switch_position_mode(
                 category="linear",
                 mode=mode,
-                symbol="",
+                coin="USDT",
             )
         return self._retry_rest(_call)
 
@@ -279,11 +279,13 @@ class BybitClient:
         )
 
     def get_positions(self, category: str = "linear", symbol: Optional[str] = None) -> dict:
-        """Get positions."""
+        """Get positions. For linear without symbol, passes settleCoin=USDT (Bybit requires symbol or settleCoin)."""
         def _call():
             params: dict = {"category": category}
             if symbol:
                 params["symbol"] = symbol
+            else:
+                params["settleCoin"] = "USDT"
             return self.http.get_positions(**params)
         return self._retry_rest(_call)
 

@@ -130,11 +130,12 @@ class ContextRefresher:
             self._heartbeat("funding", False)
 
     def refresh_long_short_ratio(self, symbols: list[str]) -> None:
-        """Fetch long/short ratio per symbol."""
+        """Fetch long/short ratio per symbol. Skips symbols that fail (e.g. unsupported); period=5min required by API."""
         now_ms = int(time.time() * 1000)
+        any_ok = False
         for symbol in symbols[:50]:
             try:
-                resp = self.client.get_long_short_ratio(category="linear", symbol=symbol)
+                resp = self.client.get_long_short_ratio(category="linear", symbol=symbol, period="5min")
                 result = resp.get("result", {})
                 lst = result.get("list", [])
                 if lst:
@@ -142,11 +143,11 @@ class ContextRefresher:
                     ratio = float(item.get("buySellRatio", 1) or 1)
                     self.market_state.update_long_short_ratio(symbol, ratio)
                     self.staleness.long_short_ratio[symbol] = now_ms
+                    any_ok = True
             except Exception as e:
-                log.debug(f"Long/short ratio {symbol}: {e}")
-                self._heartbeat("long_short_ratio", False)
-                return
-        self._heartbeat("long_short_ratio", True)
+                log.debug("Long/short ratio {}: {}", symbol, e)
+                continue
+        self._heartbeat("long_short_ratio", any_ok)
 
     def refresh_instruments(self, universe: UniverseManager) -> None:
         """Refresh instrument metadata (universe)."""
