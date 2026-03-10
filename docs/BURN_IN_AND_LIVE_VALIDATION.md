@@ -96,6 +96,15 @@ Readiness is computed from:
 
 No automatic mode escalation; the operator decides when to change phase or limits.
 
+When `automation.enabled: true` and `automation.demo_orchestration_enabled: true` in `config/config.yaml`, the **Demo orchestration layer** will also compute readiness automatically on a conservative cadence (via `python run_bot.py automation cycle`) and use it to decide when to:
+
+- run evaluation,
+- run the optimizer,
+- start/maintain shadow for the best candidate, and
+- update a recommendation artifact under `artifacts/automation/`.
+
+This automation is **Demo-only** and does **not** change burn-in semantics: it never auto-promotes config or environment; it only suggests next manual commands.
+
 ## Promote environment (Demo -> Live)
 
 Use the **promote-env** helper to switch from Demo to guarded Live only when readiness passes and you explicitly confirm:

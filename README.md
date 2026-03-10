@@ -17,6 +17,7 @@ Production-ready Bybit V5 cross-sectional flow impulse trading bot for linear US
 - **Stage 4 (strategy refinement)**: Flow feature expansion, regime filters, adaptive thresholds, improved ranking, exit refinements (exhaustion/failed-breakout), cluster controls, Stage 4 evaluation metrics and optimizer params (see [docs/STAGE4_STRATEGY_REFINEMENT.md](docs/STAGE4_STRATEGY_REFINEMENT.md), [docs/REGIME_FILTERS_AND_THRESHOLDS.md](docs/REGIME_FILTERS_AND_THRESHOLDS.md))
 - **Stage 5 (platform & portfolio)**: Portfolio risk budgeting, **candidate-set allocator** (allocates across multiple candidates, prefers stronger scores when budgets are tight), exposure controls, strategy registry, replay/fill model, **heartbeat written by runtime loops** (context refresh, WS, reconciliation, lifecycle, score/entry, degradation monitor), health/status/report CLI with real loop freshness (see [docs/STAGE5_PLATFORM_AND_PORTFOLIO.md](docs/STAGE5_PLATFORM_AND_PORTFOLIO.md), [docs/MONITORING_AND_ALERTING.md](docs/MONITORING_AND_ALERTING.md), [docs/DEPLOYMENT_AND_HEALTHCHECKS.md](docs/DEPLOYMENT_AND_HEALTHCHECKS.md))
 - **Burn-in / live validation**: Optional **burn-in mode** with stricter limits, execution audit, protection-state audit, gate breaches, and readiness reporting for **Bybit Demo** (recommended) and small-cap live rollout (see [docs/BURN_IN_AND_LIVE_VALIDATION.md](docs/BURN_IN_AND_LIVE_VALIDATION.md))
+- **Demo automation (optional)**: Config-driven Demo orchestration that, when enabled, automatically runs readiness → evaluation → optimizer → candidate generation → shadow → recommendation for Demo burn-in, while keeping **config promotion** and **Demo → Live promotion** strictly manual (see `python run_bot.py automation --help`).
 
 **Canonical install and run workflow (Ubuntu):** See **[docs/INSTALL_AND_RUN_GUIDE.md](docs/INSTALL_AND_RUN_GUIDE.md)** for the exact installation steps and recommended run sequence (demo burn-in → promote-env → guarded live → evaluate/optimize/shadow/promote/rollback → incident stop).
 
@@ -90,23 +91,36 @@ See `config/config.yaml.example` for all options. Key additions:
 - `scripts/live_trade.sh` – Live (mainnet)
 - `scripts/check_health.sh` – Health check
 - **Operator workflow (burn-in):** `scripts/validate_env.sh`, `scripts/start_testnet_burnin.sh` (demo burn-in), `scripts/check_burnin.sh`, `scripts/check_small_live_ready.sh`, **`scripts/promote_demo_to_live.sh`** (promote-env), `scripts/start_small_live.sh`, `scripts/incident_stop.sh`, `scripts/generate_burnin_bundle.sh`, `scripts/show_runtime_mode.sh`, `scripts/backup_config.sh`, `scripts/operator_menu.sh`
-- **Systemd:** `scripts/install_systemd.sh`, `scripts/service_status.sh`, `scripts/tail_logs.sh`
+- **Systemd:** `scripts/install_systemd.sh` (main bot + optional automation timer), `scripts/service_status.sh`, `scripts/tail_logs.sh`, `scripts/automation_status.sh`
 
 See **docs/INSTALL_AND_RUN_GUIDE.md** for the canonical install and run workflow. See **docs/BURN_IN_OPERATOR_RUNBOOK.md** for the full operator runbook (burn-in, promote-env, guarded live, evaluate, optimize, shadow, promote/rollback).
 
 ## Systemd
 
+Two units are available: the **main trading bot** and the **Demo orchestration timer** (runs `python run_bot.py automation cycle` periodically). Trading and orchestration are separate; the timer does not start the bot.
+
 ```bash
-./scripts/install_systemd.sh   # install unit (prompts for repo path / user)
-# Or copy and edit manually:
-sudo cp money-flow-momentum.service /etc/systemd/system/
-# Edit User, Group, WorkingDirectory, ExecStart, StandardOutput path if needed
+./scripts/install_systemd.sh   # install main service + automation timer (use --no-automation to skip timer)
+# Edit User, Group, WorkingDirectory in generated units if needed
 sudo systemctl daemon-reload
+
+# Main bot (trading)
 sudo systemctl enable money-flow-momentum
 sudo systemctl start money-flow-momentum
-./scripts/service_status.sh
-./scripts/tail_logs.sh
+
+# Automation timer (Demo orchestration: readiness → evaluation → optimizer → shadow → recommendation; every 15 min)
+sudo systemctl enable money-flow-momentum-automation.timer
+sudo systemctl start money-flow-momentum-automation.timer
+
+./scripts/service_status.sh              # both bot and automation
+./scripts/service_status.sh bot          # main bot only
+./scripts/service_status.sh automation   # automation timer + last run
+./scripts/tail_logs.sh [lines]           # bot log (logs/bot.log)
+./scripts/tail_logs.sh automation [lines] # automation cycle log (journalctl)
+./scripts/automation_status.sh          # automation status + recommendation artifact
 ```
+
+To install only the main bot service (no automation timer): `./scripts/install_systemd.sh --no-automation`. The automation timer is only meaningful when `automation.enabled` and `automation.demo_orchestration_enabled` are true in config and the main bot is running in Demo.
 
 ## Log Rotation
 
@@ -178,6 +192,10 @@ python3 run_bot.py burnin status
 python3 run_bot.py burnin report --window 24
 python3 run_bot.py burnin readiness
 python3 run_bot.py burnin readiness --output artifacts/burnin --window 24
+
+# Demo automation (optional; Demo only)
+python3 run_bot.py automation cycle
+python3 run_bot.py automation status
 
 # Environment/config validation (install and pre-run)
 python3 run_bot.py validate

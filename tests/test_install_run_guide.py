@@ -20,6 +20,8 @@ def test_canonical_guide_exists():
     assert "start_small_live.sh" in text
     assert "config rollback" in text or "run_bot.py rollback" in text
     assert "incident_stop" in text
+    assert "money-flow-momentum-automation.timer" in text
+    assert "automation cycle" in text
 
 
 def test_install_sh_exists():
@@ -41,6 +43,9 @@ def test_key_scripts_exist():
         "scripts/start_small_live.sh",
         "scripts/incident_stop.sh",
         "scripts/install_systemd.sh",
+        "scripts/service_status.sh",
+        "scripts/tail_logs.sh",
+        "scripts/automation_status.sh",
     ]
     for s in scripts:
         assert (root / s).exists(), f"Missing {s}"
@@ -57,3 +62,23 @@ def test_systemd_service_file_exists():
     """money-flow-momentum.service exists at repo root."""
     root = Path(__file__).resolve().parents[1]
     assert (root / "money-flow-momentum.service").exists()
+
+
+def test_automation_systemd_units_exist():
+    """Automation service and timer unit files exist at repo root."""
+    root = Path(__file__).resolve().parents[1]
+    assert (root / "money-flow-momentum-automation.service").exists()
+    assert (root / "money-flow-momentum-automation.timer").exists()
+
+
+def test_automation_units_referenced_in_scripts():
+    """Helper scripts reference the automation service/timer unit names correctly."""
+    root = Path(__file__).resolve().parents[1]
+    service_name = "money-flow-momentum-automation.service"
+    timer_name = "money-flow-momentum-automation.timer"
+    install = (root / "scripts" / "install_systemd.sh").read_text(encoding="utf-8")
+    status = (root / "scripts" / "service_status.sh").read_text(encoding="utf-8")
+    tail = (root / "scripts" / "tail_logs.sh").read_text(encoding="utf-8")
+    assert service_name in install and timer_name in install
+    assert service_name in status and timer_name in status
+    assert service_name in tail

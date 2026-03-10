@@ -69,9 +69,11 @@ The running bot **writes the heartbeat file** from its main loops: context refre
 
 ## Systemd
 
-- Use `./scripts/install_systemd.sh` to install the unit (substitutes repo path and user), or copy and edit the service file manually; set `User` and `WorkingDirectory` appropriately.
-- **Status:** `./scripts/service_status.sh` or `sudo systemctl status money-flow-momentum`
-- **Logs:** `./scripts/tail_logs.sh` or `journalctl -u money-flow-momentum -f`
+- Use `./scripts/install_systemd.sh` to install the main bot unit and (optionally) the automation timer. Use `--no-automation` to skip the timer. Substitutes repo path and user in service files; set `User` and `WorkingDirectory` if needed.
+- **Two units:** (1) **Main bot** (`money-flow-momentum.service`) — trading. (2) **Automation timer** (`money-flow-momentum-automation.timer`) — runs `python run_bot.py automation cycle` every 15 min; does not start the bot and does not auto-promote config or environment. Enable/start the timer only when Demo orchestration is desired; the main bot should be running separately.
+- **Status:** `./scripts/service_status.sh` (both), `./scripts/service_status.sh bot`, `./scripts/service_status.sh automation`, or `sudo systemctl status money-flow-momentum` / `sudo systemctl status money-flow-momentum-automation.timer`
+- **Logs:** `./scripts/tail_logs.sh` (main bot) or `./scripts/tail_logs.sh automation` (automation cycle); or `journalctl -u money-flow-momentum -f` / `journalctl -u money-flow-momentum-automation.service -f`
+- **Automation status:** `./scripts/automation_status.sh`
 - Ensure `data/` and `artifacts/` are writable by the service user.
 
 ## Caveats

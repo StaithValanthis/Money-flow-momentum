@@ -1,0 +1,23 @@
+[Unit]
+Description=Money Flow Momentum - Demo orchestration (automation cycle)
+# Does not start the trading bot; only runs readiness/evaluation/optimizer/shadow/recommendation.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=REPO_USER
+Group=REPO_GROUP
+WorkingDirectory=REPO_ROOT
+ExecStart=REPO_ROOT/venv/bin/python run_bot.py automation cycle
+Environment=PATH=REPO_ROOT/venv/bin
+Environment=PYTHONUNBUFFERED=1
+# Load .env if present (same as bot runtime)
+EnvironmentFile=-REPO_ROOT/.env
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=money-flow-momentum-automation
+
+[Install]
+WantedBy=multi-user.target

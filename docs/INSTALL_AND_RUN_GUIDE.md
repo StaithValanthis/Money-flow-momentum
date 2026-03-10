@@ -88,15 +88,22 @@ Or: `./scripts/show_runtime_mode.sh`
 
 Confirm `selected_environment: DEMO`, `burn_in_phase: demo`, `dry_run: false` (for real Demo orders), and `selected_key_pair: present`.
 
-### 1.7 Optional: install systemd service
+### 1.7 Optional: install systemd service (main bot + automation timer)
 
 ```bash
 ./scripts/install_systemd.sh
+sudo systemctl daemon-reload
 sudo systemctl enable money-flow-momentum
 # Start later with: sudo systemctl start money-flow-momentum
+
+# Optional: enable Demo orchestration timer (runs automation cycle every 15 min)
+sudo systemctl enable money-flow-momentum-automation.timer
+sudo systemctl start money-flow-momentum-automation.timer
 ```
 
-User unit: `./scripts/install_systemd.sh --user` then `systemctl --user enable money-flow-momentum`.
+To install only the main bot (no automation timer): `./scripts/install_systemd.sh --no-automation`.
+
+User unit: `./scripts/install_systemd.sh --user` then `systemctl --user enable money-flow-momentum` (and optionally enable/start the automation timer if installed).
 
 ---
 
@@ -125,6 +132,8 @@ source venv/bin/activate
 sudo systemctl start money-flow-momentum
 ./scripts/check_burnin.sh
 ```
+
+To run Demo orchestration (evaluation/optimizer/shadow/recommendation) periodically in the background, enable the automation timer after installing systemd: `sudo systemctl enable money-flow-momentum-automation.timer && sudo systemctl start money-flow-momentum-automation.timer`. The timer runs `python run_bot.py automation cycle` every 15 minutes; it does not start the trading bot and does not auto-promote config or environment. See **Automation timer** in the Systemd section below.
 
 ### Phase 2 — Promote environment (Demo → Live)
 
@@ -156,10 +165,12 @@ Or use the shell wrapper: `./scripts/promote_demo_to_live.sh` (preview), `./scri
 | Optimizer report | `python run_bot.py optimize report <run_id>` |
 | Shadow start | `python run_bot.py shadow start --candidate-config-id <id>` |
 | Shadow report | `python run_bot.py shadow report <candidate_config_id>` |
-| Promote candidate | `python run_bot.py promote --config-id <id>` |
+| Promote candidate (manual) | `python run_bot.py promote --config-id <id>` |
 | Promote status | `python run_bot.py promote status` |
 | Rollback config | `python run_bot.py config rollback [--reason "reason"]` or `python run_bot.py rollback [--reason "reason"]` |
 | Config list | `python run_bot.py config list` |
+| **Demo automation cycle** (optional) | `python run_bot.py automation cycle` |
+| **Demo automation status** | `python run_bot.py automation status` |
 
 ### Phase 5 — Incident response
 
@@ -190,17 +201,24 @@ Or use the shell wrapper: `./scripts/promote_demo_to_live.sh` (preview), `./scri
 
 ## Systemd
 
+Two units: **main trading bot** and **Demo orchestration timer**. Trading and orchestration are separate; the timer only runs `python run_bot.py automation cycle` and does not start the bot or auto-promote anything.
+
 | Action | Command |
 |--------|---------|
-| Install unit | `./scripts/install_systemd.sh` |
-| Enable | `sudo systemctl enable money-flow-momentum` |
-| Start | `sudo systemctl start money-flow-momentum` |
-| Stop | `sudo systemctl stop money-flow-momentum` |
-| Restart | `sudo systemctl restart money-flow-momentum` |
-| Status | `./scripts/service_status.sh` or `sudo systemctl status money-flow-momentum` |
-| Logs | `./scripts/tail_logs.sh` or `tail -f logs/bot.log` |
+| Install units | `./scripts/install_systemd.sh` (main + automation timer); use `--no-automation` to skip timer |
+| Reload | `sudo systemctl daemon-reload` |
+| **Main bot** enable/start | `sudo systemctl enable money-flow-momentum` then `sudo systemctl start money-flow-momentum` |
+| **Main bot** stop/restart | `sudo systemctl stop money-flow-momentum` / `sudo systemctl restart money-flow-momentum` |
+| **Automation timer** enable/start | `sudo systemctl enable money-flow-momentum-automation.timer` then `sudo systemctl start money-flow-momentum-automation.timer` |
+| **Automation timer** disable/stop | `sudo systemctl stop money-flow-momentum-automation.timer` then `sudo systemctl disable money-flow-momentum-automation.timer` |
+| Status (both) | `./scripts/service_status.sh` |
+| Status main only | `./scripts/service_status.sh bot` |
+| Status automation only | `./scripts/service_status.sh automation` |
+| Logs main bot | `./scripts/tail_logs.sh [lines]` or `tail -f logs/bot.log` |
+| Logs automation | `./scripts/tail_logs.sh automation [lines]` or `journalctl -u money-flow-momentum-automation.service -f` |
+| Automation status + recommendation | `./scripts/automation_status.sh` |
 
-Service file: `money-flow-momentum.service` (installed to `/etc/systemd/system/` by install script).
+Service files: `money-flow-momentum.service` (main bot), `money-flow-momentum-automation.service` + `money-flow-momentum-automation.timer` (orchestration). The automation timer is only meaningful when `automation.enabled` and Demo orchestration are enabled in config and the main bot is running in Demo.
 
 ---
 

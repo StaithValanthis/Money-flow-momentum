@@ -75,13 +75,22 @@ Validation checks: config exists and loads, `.env` present for paper/live, DB an
 
 ```bash
 ./scripts/install_systemd.sh
+sudo systemctl daemon-reload
 sudo systemctl enable money-flow-momentum
 sudo systemctl start money-flow-momentum
 ```
 
-- **Status:** `./scripts/service_status.sh` or `sudo systemctl status money-flow-momentum`
-- **Logs:** `./scripts/tail_logs.sh` or `tail -f logs/bot.log`
-- User unit: `./scripts/install_systemd.sh --user` then `systemctl --user enable/start money-flow-momentum`
+Optional **Demo orchestration timer** (runs `python run_bot.py automation cycle` every 15 min; does not trade or auto-promote):
+
+```bash
+sudo systemctl enable money-flow-momentum-automation.timer
+sudo systemctl start money-flow-momentum-automation.timer
+```
+
+- **Status:** `./scripts/service_status.sh` (both) or `./scripts/service_status.sh bot` / `./scripts/service_status.sh automation`
+- **Logs:** `./scripts/tail_logs.sh` (main bot) or `./scripts/tail_logs.sh automation` (automation cycle)
+- **Automation status:** `./scripts/automation_status.sh`
+- User unit: `./scripts/install_systemd.sh --user` then `systemctl --user enable/start money-flow-momentum` (and optionally the automation timer)
 
 ---
 
@@ -270,14 +279,32 @@ Runs `python run_bot.py config rollback --reason "reason text"` after stop. Does
 
 ## 12. Systemd commands (reference)
 
+**Main bot:**
 ```bash
-./scripts/install_systemd.sh          # Install unit
+./scripts/install_systemd.sh          # Install main + optional automation timer (use --no-automation to skip timer)
+sudo systemctl daemon-reload
 sudo systemctl enable money-flow-momentum
 sudo systemctl start money-flow-momentum
 sudo systemctl stop money-flow-momentum
 sudo systemctl restart money-flow-momentum
-./scripts/service_status.sh
-./scripts/tail_logs.sh [lines]
+```
+
+**Automation timer** (Demo orchestration; runs `automation cycle` every 15 min; separate from trading):
+```bash
+sudo systemctl enable money-flow-momentum-automation.timer
+sudo systemctl start money-flow-momentum-automation.timer
+sudo systemctl stop money-flow-momentum-automation.timer
+sudo systemctl disable money-flow-momentum-automation.timer
+```
+
+**Status and logs:**
+```bash
+./scripts/service_status.sh              # both
+./scripts/service_status.sh bot           # main bot only
+./scripts/service_status.sh automation    # automation timer + last run
+./scripts/tail_logs.sh [lines]            # main bot log
+./scripts/tail_logs.sh automation [lines] # automation cycle journal
+./scripts/automation_status.sh            # automation status + recommendation
 ```
 
 ---
@@ -321,7 +348,10 @@ After demo or small-live run, use Stage 3 CLI for evaluation, optimization, shad
   `python run_bot.py promote status`  
   `python run_bot.py config rollback [--reason "reason"]`
 
-See **docs/STAGE3_ADAPTIVE_FRAMEWORK.md** and **docs/OPTIMIZATION_WORKFLOW.md** for details. This flow is **operator-driven**; no automatic promotion.
+- **Demo automation (optional):**  
+  One-shot: `python run_bot.py automation cycle`  
+  Status: `python run_bot.py automation status` or `./scripts/automation_status.sh`  
+  For hands-off Demo orchestration, use the **automation timer**: `sudo systemctl enable money-flow-momentum-automation.timer && sudo systemctl start money-flow-momentum-automation.timer`. The timer runs `automation cycle` every 15 minutes; it does not start the trading bot and does not auto-promote config or environment. The main bot service must be running separately for trading.
 
 ---
 
@@ -345,5 +375,8 @@ See **docs/STAGE3_ADAPTIVE_FRAMEWORK.md** and **docs/OPTIMIZATION_WORKFLOW.md** 
 | Shadow report | `python run_bot.py shadow report <candidate_config_id>` |
 | Promote config | `python run_bot.py promote --config-id <id>` |
 | Rollback config | `python run_bot.py config rollback [--reason "reason"]` |
+| Enable automation timer | `sudo systemctl enable money-flow-momentum-automation.timer && sudo systemctl start money-flow-momentum-automation.timer` |
+| Disable automation timer | `sudo systemctl stop money-flow-momentum-automation.timer && sudo systemctl disable money-flow-momentum-automation.timer` |
+| Automation status | `./scripts/automation_status.sh` or `python run_bot.py automation status` |
 
 See **docs/BURN_IN_AND_LIVE_VALIDATION.md** for burn-in semantics and **docs/DEPLOYMENT_AND_HEALTHCHECKS.md** for health/status/report details.

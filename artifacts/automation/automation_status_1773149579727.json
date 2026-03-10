@@ -1,23 +1,23 @@
 {
-  "timestamp_ms": 1773149586391,
+  "timestamp_ms": 1773149579727,
   "state": "AWAITING_MANUAL_APPROVAL",
   "automation": {
     "enabled": true
   },
   "snapshot": {
     "state": "AWAITING_MANUAL_APPROVAL",
-    "last_readiness_ts": 1773149586385,
+    "last_readiness_ts": 1773149579720,
     "last_readiness_classification": "READY_FOR_TESTNET_CONTINUATION",
     "last_evaluation_run_id": "eval123",
-    "last_evaluation_ts": 1773149586385,
+    "last_evaluation_ts": 1773149579720,
     "last_optimizer_run_id": "opt123",
-    "last_optimizer_ts": 1773149586385,
+    "last_optimizer_ts": 1773149579720,
     "best_candidate_config_id": "candidate_xyz",
     "shadow_candidate_config_id": "candidate_xyz",
     "last_recommendation_status": "READY_FOR_CONFIG_REVIEW",
     "blocked_reason": null,
     "last_error": null,
-    "updated_ts": 1773149586388
+    "updated_ts": 1773149579724
   },
   "active_config_id": null,
   "readiness_details": {
