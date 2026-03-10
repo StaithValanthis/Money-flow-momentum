@@ -78,7 +78,7 @@ class TradingBot:
         self._effective_api_key = api_key
         self._bybit_env_type = env_type  # demo | live | testnet
         cred_mode = "legacy" if is_legacy else "dual_key"
-        log.info("Bybit environment=%s credential_mode=%s", env_type, cred_mode)
+        log.info("Bybit environment={} credential_mode={}", env_type, cred_mode)
         if is_legacy:
             log.warning("Using legacy BYBIT_API_KEY/SECRET; set BYBIT_DEMO_API_KEY/SECRET and BYBIT_LIVE_API_KEY/SECRET for dual-key mode")
         if env_type == "demo":
@@ -125,12 +125,12 @@ class TradingBot:
                 self.config, version="bootstrap", status="active", description="Bootstrap active", source="bootstrap",
                 db_path=self.config.database_path,
             )
-            log.info("Registered bootstrap config: %s", self._config_id)
+            log.info("Registered bootstrap config: {}", self._config_id)
         else:
             loaded = load_config_from_artifact(self._config_id, self.config.database_path)
             if loaded is not None:
                 self.config = loaded
-            log.info("Using active config: %s", self._config_id)
+            log.info("Using active config: {}", self._config_id)
 
     def _on_trade(self, trade: dict) -> None:
         self._market_state.on_trade(trade)
@@ -647,14 +647,14 @@ class TradingBot:
                             if self._health:
                                 self._health.report_ok("degradation_monitor", "insufficient_data")
                         elif status == "degradation_detected" and events:
-                            log.warning("Degradation check: %s event(s) persisted", len(events))
+                            log.warning("Degradation check: {} event(s) persisted", len(events))
                             if self._health:
                                 self._health.report_fail("degradation_monitor", f"{len(events)} events")
                         else:
                             if self._health:
                                 self._health.report_ok("degradation_monitor")
                     except Exception as e:
-                        log.debug("Degradation check: %s", e)
+                        log.debug("Degradation check: {}", e)
                         if self._health:
                             self._health.report_fail("degradation_monitor", str(e))
 
@@ -785,7 +785,7 @@ class TradingBot:
                     if gate_result.blocked_entries:
                         burn_in_block_entries = True
                         for b in gate_result.breaches:
-                            log.warning("Burn-in gate: %s", b.get("message", b))
+                            log.warning("Burn-in gate: {}", b.get("message", b))
 
                 refs: list[tuple[Any, Any]] = []
                 candidates_for_alloc: list[CandidateForAllocation] = []
@@ -1089,7 +1089,7 @@ def run(
         rotation=config.logging.rotation,
         retention=config.logging.retention,
     )
-    logger.info("Starting bot mode=%s dry_run=%s env=%s", config.mode, config.dry_run, get_bybit_env(env))
+    logger.info("Starting bot mode={} dry_run={} env={}", config.mode, config.dry_run, get_bybit_env(env))
     bot = TradingBot(config, env)
 
     def shutdown(sig, frame):

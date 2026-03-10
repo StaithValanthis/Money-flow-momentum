@@ -15,7 +15,7 @@ _REGISTRY: dict[str, type[BaseStrategy]] = {}
 def register_strategy(name: str, strategy_class: type[BaseStrategy]) -> None:
     """Register a strategy class by name."""
     _REGISTRY[name] = strategy_class
-    log.debug("Registered strategy: %s", name)
+    log.debug("Registered strategy: {}", name)
 
 
 def get_strategy(name: str, config: Config) -> Optional[BaseStrategy]:

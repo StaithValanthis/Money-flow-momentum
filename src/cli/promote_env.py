@@ -117,7 +117,7 @@ def run_promote_env_prechecks(
             )
             db.close()
         except Exception as e:
-            log.debug("Readiness computation failed: %s", e)
+            log.debug("Readiness computation failed: {}", e)
             errors.append("Readiness check failed: %s" % e)
 
     if readiness and readiness.classification not in ACCEPTED_READINESS:
@@ -150,7 +150,7 @@ def _backup_file(path: Path) -> Optional[Path]:
         backup.write_bytes(path.read_bytes())
         return backup
     except OSError as e:
-        log.warning("Backup failed for %s: %s", path, e)
+        log.warning("Backup failed for {}: {}", path, e)
         return None
 
 
