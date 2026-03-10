@@ -6,7 +6,7 @@ from src.automation.orchestrator import get_automation_status, run_demo_automati
 from src.config.config import AutomationConfig, BurnInConfig, Config, EnvSettings
 from src.storage.db import Database
 from src.storage.reconciliation import ReconciliationStore
-from src.validation.readiness import READINESS_NOT_READY
+from src.validation.readiness import READINESS_NOT_READY, READINESS_NEEDS_REVIEW
 
 
 def test_automation_idle_when_disabled(tmp_path: Path, monkeypatch) -> None:
@@ -158,7 +158,144 @@ def test_automation_blocked_by_kill_switch(tmp_path: Path, monkeypatch) -> None:
     assert snap["last_recommendation_status"] == "NOT_READY"
 
 
-def test_automation_evaluates_and_optimizes_when_ready(tmp_path: Path, monkeypatch) -> None:
+def test_automation_blocked_by_burnin_gate_breach(tmp_path: Path, monkeypatch) -> None:
+    """Burn-in gate breach with trades => BLOCKED_BY_BURNIN, not WAITING_FOR_BURNIN_DATA."""
+    db_path = tmp_path / "bot.db"
+    db = Database(str(db_path))
+    db.close()
+
+    cfg = Config()
+    cfg.database_path = str(db_path)
+    cfg.automation = AutomationConfig(enabled=True, demo_orchestration_enabled=True)
+    cfg.burn_in = BurnInConfig(burn_in_enabled=True, burn_in_phase="demo")
+    env = EnvSettings()
+    env.bybit_env = "demo"
+
+    def _fake_load_config(_path):
+        return cfg, env
+
+    class DummyReadiness:
+        classification = READINESS_NEEDS_REVIEW
+        message = "Burn-in gate breach(es) in window"
+        details = {"trade_count": 18, "kill_switch_count": 0, "burnin_gate_breach_count": 5}
+
+    def _fake_compute_readiness(*args, **kwargs):
+        return DummyReadiness()
+
+    monkeypatch.setattr("src.automation.orchestrator.load_config", _fake_load_config)
+    monkeypatch.setattr("src.automation.orchestrator.compute_readiness", _fake_compute_readiness)
+
+    out = run_demo_automation_cycle(config_path=Path("dummy.yaml"))
+    snap = out["snapshot"]
+    assert snap["state"] == "BLOCKED_BY_BURNIN"
+    assert snap["last_recommendation_status"] == "NOT_READY"
+    assert out["details"].get("reason") == "burnin_gate_breach"
+
+
+def test_automation_trade_count_zero_stays_waiting_for_burnin_data(tmp_path: Path, monkeypatch) -> None:
+    """trade_count == 0 => WAITING_FOR_BURNIN_DATA with CONTINUE_DEMO."""
+    db_path = tmp_path / "bot.db"
+    db = Database(str(db_path))
+    db.close()
+
+    cfg = Config()
+    cfg.database_path = str(db_path)
+    cfg.automation = AutomationConfig(enabled=True, demo_orchestration_enabled=True)
+    cfg.burn_in = BurnInConfig(burn_in_enabled=True, burn_in_phase="demo")
+    env = EnvSettings()
+    env.bybit_env = "demo"
+
+    def _fake_load_config(_path):
+        return cfg, env
+
+    class DummyReadiness:
+        classification = "READY_FOR_TESTNET_CONTINUATION"
+        message = "OK"
+        details = {"trade_count": 0, "kill_switch_count": 0, "burnin_gate_breach_count": 0}
+
+    def _fake_compute_readiness(*args, **kwargs):
+        return DummyReadiness()
+
+    monkeypatch.setattr("src.automation.orchestrator.load_config", _fake_load_config)
+    monkeypatch.setattr("src.automation.orchestrator.compute_readiness", _fake_compute_readiness)
+
+    out = run_demo_automation_cycle(config_path=Path("dummy.yaml"))
+    snap = out["snapshot"]
+    assert snap["state"] == "WAITING_FOR_BURNIN_DATA"
+    assert snap["last_recommendation_status"] == "CONTINUE_DEMO"
+
+
+def test_automation_trade_count_positive_no_candidate_stays_ready_for_eval(tmp_path: Path, monkeypatch) -> None:
+    """trade_count > 0, no candidate, no blocked conditions => READY_FOR_EVALUATION (not WAITING_FOR_BURNIN_DATA)."""
+    db_path = tmp_path / "bot.db"
+    db = Database(str(db_path))
+    db.close()
+
+    cfg = Config()
+    cfg.database_path = str(db_path)
+    cfg.automation = AutomationConfig(
+        enabled=True,
+        demo_orchestration_enabled=True,
+        min_trades_for_auto_evaluation=100,
+        min_hours_between_evaluations=24.0,
+    )
+    cfg.burn_in = BurnInConfig(burn_in_enabled=True, burn_in_phase="demo")
+    env = EnvSettings()
+    env.bybit_env = "demo"
+
+    def _fake_load_config(_path):
+        return cfg, env
+
+    class DummyReadiness:
+        classification = "READY_FOR_TESTNET_CONTINUATION"
+        message = "OK"
+        details = {"trade_count": 18, "kill_switch_count": 0, "burnin_gate_breach_count": 0}
+
+    def _fake_compute_readiness(*args, **kwargs):
+        return DummyReadiness()
+
+    monkeypatch.setattr("src.automation.orchestrator.load_config", _fake_load_config)
+    monkeypatch.setattr("src.automation.orchestrator.compute_readiness", _fake_compute_readiness)
+
+    out = run_demo_automation_cycle(config_path=Path("dummy.yaml"))
+    snap = out["snapshot"]
+    assert snap["state"] == "READY_FOR_EVALUATION"
+    assert snap["state"] != "WAITING_FOR_BURNIN_DATA"
+    assert snap["last_recommendation_status"] == "CONTINUE_DEMO"
+
+
+def test_automation_blocked_by_health_when_not_ready_with_trades(tmp_path: Path, monkeypatch) -> None:
+    """trade_count > 0 but readiness NOT_READY (e.g. other reason) => BLOCKED_BY_HEALTH."""
+    db_path = tmp_path / "bot.db"
+    db = Database(str(db_path))
+    db.close()
+
+    cfg = Config()
+    cfg.database_path = str(db_path)
+    cfg.automation = AutomationConfig(enabled=True, demo_orchestration_enabled=True)
+    cfg.burn_in = BurnInConfig(burn_in_enabled=True, burn_in_phase="demo")
+    env = EnvSettings()
+    env.bybit_env = "demo"
+
+    def _fake_load_config(_path):
+        return cfg, env
+
+    class DummyReadiness:
+        classification = READINESS_NOT_READY
+        message = "Protection mismatch(es) in window"
+        details = {"trade_count": 10, "kill_switch_count": 0, "burnin_gate_breach_count": 0, "protection_mismatch_count": 1}
+
+    def _fake_compute_readiness(*args, **kwargs):
+        return DummyReadiness()
+
+    monkeypatch.setattr("src.automation.orchestrator.load_config", _fake_load_config)
+    monkeypatch.setattr("src.automation.orchestrator.compute_readiness", _fake_compute_readiness)
+
+    out = run_demo_automation_cycle(config_path=Path("dummy.yaml"))
+    snap = out["snapshot"]
+    assert snap["state"] == "BLOCKED_BY_HEALTH"
+    assert snap["last_recommendation_status"] == "NOT_READY"
+    assert out["details"].get("reason") == "readiness_not_ok"
     """When trades and readiness are sufficient, automation runs evaluation, optimizer, shadow, and writes recommendation."""
     db_path = tmp_path / "bot.db"
     db = Database(str(db_path))

@@ -109,6 +109,8 @@ def _write_recommendation_artifacts(config: Config, snap: AutomationSnapshot, de
         f.write(f"- shadow_candidate_config_id: {snap.shadow_candidate_config_id or 'none'}\n")
         if snap.blocked_reason:
             f.write(f"- blocked_reason: {snap.blocked_reason}\n")
+        if details.get("blocked_hint"):
+            f.write(f"- blocked_hint: {details['blocked_hint']}\n")
         if snap.last_error:
             f.write(f"- last_error: {snap.last_error}\n")
         f.write("\n## Next manual commands\n\n")
@@ -183,8 +185,8 @@ def run_demo_automation_cycle(config_path: Optional[Path] = None) -> dict[str, A
         kill_switch_count = int(readiness.details.get("kill_switch_count", 0) or 0)
         gate_breaches = int(readiness.details.get("burnin_gate_breach_count", 0) or 0)
 
-        # Blocked conditions
-        if kill_switch_count > 0 and getattr(auto, "pause_on_kill_switch", True):
+        # Blocked conditions: always set blocked state (do not collapse to WAITING_FOR_BURNIN_DATA)
+        if kill_switch_count > 0:
             snap.last_recommendation_status = RECOMMENDATION_NOT_READY
             snap = transition(snap, STATE_BLOCKED_BY_KILL_SWITCH, reason="kill_switch_in_window")
             _persist_snapshot(db, snap)
@@ -200,16 +202,41 @@ def run_demo_automation_cycle(config_path: Optional[Path] = None) -> dict[str, A
             _write_recommendation_artifacts(config, snap, details)
             return {"snapshot": asdict(snap), "details": details}
 
-        if gate_breaches > 0 and getattr(auto, "pause_on_burnin_gate_breach", True):
+        if gate_breaches > 0:
             snap.last_recommendation_status = RECOMMENDATION_NOT_READY
             snap = transition(snap, STATE_BLOCKED_BY_BURNIN, reason="burnin_gate_breach")
             _persist_snapshot(db, snap)
+            breach_hint = "Review artifacts/burnin and fix limits or wait for window to clear."
+            if gate_breaches > 100:
+                breach_hint = "Many gate breaches ({}). Run: python run_bot.py burnin report --window %.1f ; review config limits and breach reasons.".format(gate_breaches) % window_hours
             details = {
                 "reason": "burnin_gate_breach",
                 "active_config_id": config_id,
                 "readiness_details": readiness.details,
+                "blocked_hint": breach_hint,
                 "next_commands": [
                     "python run_bot.py burnin report --window %.1f" % window_hours,
+                    "python run_bot.py burnin readiness --window %.1f --output artifacts/burnin" % window_hours,
+                ],
+            }
+            _write_recommendation_artifacts(config, snap, details)
+            return {"snapshot": asdict(snap), "details": details}
+
+        # trade_count > 0 but readiness NOT_READY (e.g. kill switch already handled above) => blocked by health
+        if trade_count > 0 and readiness.classification == READINESS_NOT_READY:
+            snap.last_recommendation_status = RECOMMENDATION_NOT_READY
+            reason = readiness.message or readiness.classification
+            snap = transition(snap, STATE_BLOCKED_BY_HEALTH, reason=reason)
+            _persist_snapshot(db, snap)
+            details = {
+                "reason": "readiness_not_ok",
+                "active_config_id": config_id,
+                "readiness_details": readiness.details,
+                "readiness_classification": readiness.classification,
+                "readiness_message": readiness.message,
+                "next_commands": [
+                    "python run_bot.py burnin report --window %.1f" % window_hours,
+                    "python run_bot.py burnin readiness --window %.1f --output artifacts/burnin" % window_hours,
                 ],
             }
             _write_recommendation_artifacts(config, snap, details)
@@ -336,7 +363,10 @@ def run_demo_automation_cycle(config_path: Optional[Path] = None) -> dict[str, A
         else:
             snap.last_recommendation_status = RECOMMENDATION_CONTINUE_DEMO
             if snap.state not in (STATE_SHADOW_RUNNING, STATE_CANDIDATE_AVAILABLE):
-                snap = transition(snap, STATE_WAITING_FOR_BURNIN_DATA)
+                if trade_count <= 0:
+                    snap = transition(snap, STATE_WAITING_FOR_BURNIN_DATA)
+                else:
+                    snap = transition(snap, STATE_READY_FOR_EVALUATION)
 
         _persist_snapshot(db, snap)
 
