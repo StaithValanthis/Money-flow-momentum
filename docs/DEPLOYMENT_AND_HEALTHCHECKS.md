@@ -9,6 +9,15 @@ Before running the bot, ensure:
 - **Directories**: DB directory (e.g. `data/`) and artifact dirs are writable. Use `ensure_artifact_dirs()` or create `artifacts/`, `artifacts/evaluations`, etc.
 - **Testnet vs mainnet**: Config and `.env` should match intended environment.
 
+**Validation command (recommended before first run and after config changes):**
+
+```bash
+python run_bot.py validate
+# or: ./scripts/validate_env.sh
+```
+
+Exits 0 if config, .env (when needed), dirs, mode/testnet consistency, and active strategy are OK; exits 1 with clear errors otherwise. When validation passes, the CLI prints readiness hints for testnet burn-in vs guarded small-live. See **docs/BURN_IN_OPERATOR_RUNBOOK.md** for the full install → validate → burn-in → live → evaluate → optimize → shadow → promote/rollback workflow and script reference.
+
 ## CLI Commands (Ubuntu / Linux)
 
 From repo root with venv activated:
@@ -49,8 +58,9 @@ The running bot **writes the heartbeat file** from its main loops: context refre
 
 ## Systemd
 
-- Use the provided systemd service file; set `User` and `WorkingDirectory` appropriately.
-- `journalctl -u money-flow-momentum -f` for logs.
+- Use `./scripts/install_systemd.sh` to install the unit (substitutes repo path and user), or copy and edit the service file manually; set `User` and `WorkingDirectory` appropriately.
+- **Status:** `./scripts/service_status.sh` or `sudo systemctl status money-flow-momentum`
+- **Logs:** `./scripts/tail_logs.sh` or `journalctl -u money-flow-momentum -f`
 - Ensure `data/` and `artifacts/` are writable by the service user.
 
 ## Caveats

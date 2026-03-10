@@ -93,16 +93,23 @@ See `config/config.yaml.example` for all options. Key additions:
 - `scripts/paper_trade.sh` – Paper mode (testnet)
 - `scripts/live_trade.sh` – Live (mainnet)
 - `scripts/check_health.sh` – Health check
+- **Operator workflow (burn-in):** `scripts/validate_env.sh`, `scripts/start_testnet_burnin.sh`, `scripts/check_burnin.sh`, `scripts/check_small_live_ready.sh`, `scripts/start_small_live.sh`, `scripts/incident_stop.sh`, `scripts/generate_burnin_bundle.sh`, `scripts/show_runtime_mode.sh`, `scripts/backup_config.sh`, `scripts/operator_menu.sh`
+- **Systemd:** `scripts/install_systemd.sh`, `scripts/service_status.sh`, `scripts/tail_logs.sh`
+
+See **docs/BURN_IN_OPERATOR_RUNBOOK.md** for full install → validate → burn-in → guarded live → evaluate → optimize → shadow → promote/rollback workflow.
 
 ## Systemd
 
 ```bash
+./scripts/install_systemd.sh   # install unit (prompts for repo path / user)
+# Or copy and edit manually:
 sudo cp money-flow-momentum.service /etc/systemd/system/
-# Edit User/WorkingDirectory if needed
+# Edit User, Group, WorkingDirectory, ExecStart, StandardOutput path if needed
 sudo systemctl daemon-reload
 sudo systemctl enable money-flow-momentum
 sudo systemctl start money-flow-momentum
-sudo journalctl -u money-flow-momentum -f
+./scripts/service_status.sh
+./scripts/tail_logs.sh
 ```
 
 ## Log Rotation
@@ -175,9 +182,13 @@ python3 run_bot.py burnin status
 python3 run_bot.py burnin report --window 24
 python3 run_bot.py burnin readiness
 python3 run_bot.py burnin readiness --output artifacts/burnin --window 24
+
+# Environment/config validation (install and pre-run)
+python3 run_bot.py validate
+python3 run_bot.py show-runtime-mode
 ```
 
-See **docs/STAGE3_ADAPTIVE_FRAMEWORK.md**, **docs/OPTIMIZATION_WORKFLOW.md**, **docs/PROMOTION_AND_ROLLBACK.md**, **docs/STAGE4_STRATEGY_REFINEMENT.md**, **docs/REGIME_FILTERS_AND_THRESHOLDS.md**, **docs/STAGE5_PLATFORM_AND_PORTFOLIO.md**, **docs/MONITORING_AND_ALERTING.md**, **docs/DEPLOYMENT_AND_HEALTHCHECKS.md**, **docs/BURN_IN_AND_LIVE_VALIDATION.md**.
+See **docs/STAGE3_ADAPTIVE_FRAMEWORK.md**, **docs/OPTIMIZATION_WORKFLOW.md**, **docs/PROMOTION_AND_ROLLBACK.md**, **docs/STAGE4_STRATEGY_REFINEMENT.md**, **docs/REGIME_FILTERS_AND_THRESHOLDS.md**, **docs/STAGE5_PLATFORM_AND_PORTFOLIO.md**, **docs/MONITORING_AND_ALERTING.md**, **docs/DEPLOYMENT_AND_HEALTHCHECKS.md**, **docs/BURN_IN_AND_LIVE_VALIDATION.md**, **docs/BURN_IN_OPERATOR_RUNBOOK.md**.
 
 ## Requirements
 

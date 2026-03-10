@@ -152,4 +152,4 @@ python3 run_bot.py report
 python3 run_bot.py health
 ```
 
-See also **docs/DEPLOYMENT_AND_HEALTHCHECKS.md** and **docs/MONITORING_AND_ALERTING.md**.
+See also **docs/DEPLOYMENT_AND_HEALTHCHECKS.md**, **docs/MONITORING_AND_ALERTING.md**, and **docs/BURN_IN_OPERATOR_RUNBOOK.md** for the operator script workflow (install, validate, testnet burn-in, small-live, incident stop, evaluate, optimize, shadow, promote/rollback).

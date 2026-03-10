@@ -31,3 +31,7 @@
 - Artifact generation failures
 
 Implementors can call `AlertRouter.send()` from the appropriate places (e.g. degradation monitor, promotion, repair failure).
+
+## Operator runbook
+
+For install, validate, testnet burn-in, small-live readiness, guarded live start, and incident stop/rollback, see **docs/BURN_IN_OPERATOR_RUNBOOK.md**. Scripts: `scripts/validate_env.sh`, `scripts/check_burnin.sh`, `scripts/generate_burnin_bundle.sh`, `scripts/operator_menu.sh`, etc.

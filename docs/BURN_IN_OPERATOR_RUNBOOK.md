@@ -1,0 +1,297 @@
+# Burn-in Operator Runbook
+
+Step-by-step operator workflow for Ubuntu CLI: install, validate, testnet burn-in, small-live readiness, guarded live start, and incident stop/rollback.
+
+## Prerequisites
+
+- Ubuntu 20.04+ (or similar Linux), headless CLI
+- Python 3.11+ (`python3 --version`)
+- Repo cloned and current directory = repo root for all commands below
+
+---
+
+## 1. Install on Ubuntu
+
+```bash
+chmod +x install.sh
+./install.sh
+```
+
+Install script will:
+
+- Check Python version (warns if &lt; 3.11)
+- Create `venv` if missing
+- Install `requirements.txt`
+- Create `data/db`, `logs`, `artifacts`, `artifacts/burnin`, `artifacts/validation`
+- Copy `config/config.yaml.example` → `config/config.yaml` if missing
+- Warn if `.env` is missing
+
+**Next steps printed at end:** edit config, run bootstrap if needed, validate, then run.
+
+---
+
+## 2. Bootstrap and config
+
+- **API keys (paper/live):**  
+  `python bootstrap_config.py`  
+  Or create `.env` with `BYBIT_API_KEY`, `BYBIT_API_SECRET`, `BYBIT_TESTNET=true|false`.
+
+- **Config:**  
+  Edit `config/config.yaml`: set `mode` (e.g. `paper` for testnet), and optionally enable burn-in:
+
+```yaml
+burn_in:
+  burn_in_enabled: true
+  burn_in_phase: testnet
+  burn_in_max_trades_per_day: 20
+  burn_in_max_notional_usdt: 5000.0
+  # ... (see config/config.yaml.example)
+```
+
+---
+
+## 3. Validate environment
+
+Before first run or after config changes:
+
+```bash
+source venv/bin/activate
+python run_bot.py validate
+```
+
+Or:
+
+```bash
+./scripts/validate_env.sh
+```
+
+Validation checks: config exists and loads, `.env` present for paper/live, DB and artifact dirs writable, mode/testnet consistency, active strategy in registry. Exits 1 on errors; warnings are printed but do not fail.
+
+---
+
+## 4. Systemd (optional)
+
+```bash
+./scripts/install_systemd.sh
+sudo systemctl enable money-flow-momentum
+sudo systemctl start money-flow-momentum
+```
+
+- **Status:** `./scripts/service_status.sh` or `sudo systemctl status money-flow-momentum`
+- **Logs:** `./scripts/tail_logs.sh` or `tail -f logs/bot.log`
+- User unit: `./scripts/install_systemd.sh --user` then `systemctl --user enable/start money-flow-momentum`
+
+---
+
+## 5. Testnet burn-in start
+
+1. Set in config: `burn_in_enabled: true`, `burn_in_phase: testnet`, and testnet keys (e.g. `BYBIT_TESTNET=true`).
+2. Run:
+
+```bash
+./scripts/start_testnet_burnin.sh
+```
+
+With options:
+
+- `--no-backup` — skip config backup before start
+- `--foreground` — run bot in foreground instead of starting systemd
+
+Script will: validate env, confirm burn-in phase=testnet, optionally back up config, start service (or run in foreground), then print monitor commands.
+
+**Monitor commands (printed by script):**
+
+```bash
+./scripts/check_burnin.sh
+./scripts/tail_logs.sh
+python run_bot.py health
+python run_bot.py burnin readiness --output artifacts/burnin
+```
+
+---
+
+## 6. Testnet burn-in check
+
+Run regularly during testnet:
+
+```bash
+./scripts/check_burnin.sh
+```
+
+This runs: `health`, `status`, `burnin status`, `burnin report`, `burnin readiness` (writing to `artifacts/burnin`), then summarizes **healthy** / **needs review** / **blocked**. Exit code 2 if blocked.
+
+**Manual equivalents:**
+
+```bash
+python run_bot.py health
+python run_bot.py status
+python run_bot.py burnin status
+python run_bot.py burnin report
+python run_bot.py burnin readiness --output artifacts/burnin
+```
+
+---
+
+## 7. Readiness interpretation
+
+- **NOT_READY** — e.g. kill switch in window; do not proceed.
+- **READY_FOR_TESTNET_CONTINUATION** — OK to keep testnet running.
+- **READY_FOR_SMALL_LIVE** — No critical issues; operator may proceed to small-live **after** consciously switching phase (see below).
+- **NEEDS_REVIEW** — Protection mismatch, execution drift, gate breach, or degradation; review artifacts and fix before scaling.
+
+Readiness artifacts: `artifacts/burnin/readiness_*.json`, `readiness_*.md`.
+
+---
+
+## 8. Small-live readiness check (go/no-go)
+
+**Do not** auto-switch phase. Operator must set `burn_in_phase: live_small` in config when ready.
+
+```bash
+./scripts/check_small_live_ready.sh
+```
+
+Script checks:
+
+- `burn_in_phase` is `live_small` (fails if not set by operator)
+- Runs burn-in readiness and report
+- Produces **GO** or **NO-GO** summary
+
+If GO, proceed to guarded small-live start. If NO-GO, fix phase, readiness, or critical burn-in issues first.
+
+---
+
+## 9. Guarded small-live start
+
+1. In config: `burn_in_enabled: true`, `burn_in_phase: live_small`, mainnet keys if live, and stricter limits as desired.
+2. Start:
+
+```bash
+./scripts/start_small_live.sh
+```
+
+Use `--foreground` to run in foreground instead of systemd.
+
+Script validates env, burn-in phase and keys, then starts the service and prints post-start verification commands.
+
+**Post-start verification:**
+
+```bash
+./scripts/check_burnin.sh
+./scripts/tail_logs.sh 100
+python run_bot.py health
+```
+
+---
+
+## 10. Incident stop / rollback
+
+**Safe stop (no rollback):**
+
+```bash
+./scripts/incident_stop.sh
+```
+
+This: stops the service, prints last 80 lines of `logs/bot.log`, latest burn-in readiness file from `artifacts/burnin`, and burn-in report. Does **not** flatten positions unless already configured elsewhere.
+
+**Stop and rollback config:**
+
+```bash
+./scripts/incident_stop.sh --rollback "reason text"
+```
+
+Runs `python run_bot.py config rollback --reason "reason text"` after stop. Does not auto-flatten positions.
+
+**Next steps (printed):** Review logs and artifacts; fix issues; then `./scripts/start_testnet_burnin.sh` or `./scripts/start_small_live.sh` as appropriate.
+
+---
+
+## 11. Where artifacts and logs live
+
+| Item | Location |
+|------|----------|
+| Bot log (systemd) | `logs/bot.log` |
+| Heartbeat | `artifacts/heartbeat.json` |
+| Burn-in readiness | `artifacts/burnin/readiness_*.json`, `readiness_*.md` |
+| Burn-in bundle | `artifacts/burnin/bundle_<ts>/` (from `generate_burnin_bundle.sh`) |
+| Config backups | `artifacts/validation/` or `artifacts/validation/backups/<ts>/` with `--timestamp` |
+| DB | `data/bot.db` (or `database_path` in config) |
+
+---
+
+## 12. Systemd commands (reference)
+
+```bash
+./scripts/install_systemd.sh          # Install unit
+sudo systemctl enable money-flow-momentum
+sudo systemctl start money-flow-momentum
+sudo systemctl stop money-flow-momentum
+sudo systemctl restart money-flow-momentum
+./scripts/service_status.sh
+./scripts/tail_logs.sh [lines]
+```
+
+---
+
+## 13. Operator menu and reporting
+
+- **Command summary:**  
+  `./scripts/operator_menu.sh`
+
+- **Config backup:**  
+  `./scripts/backup_config.sh` or `./scripts/backup_config.sh --timestamp`
+
+- **Runtime mode (mode, phase, testnet, strategy):**  
+  `./scripts/show_runtime_mode.sh` or `python run_bot.py show-runtime-mode`
+
+- **Burn-in bundle (status, report, burnin status/report/readiness → one dir):**  
+  `./scripts/generate_burnin_bundle.sh`  
+  Optional: `./scripts/generate_burnin_bundle.sh artifacts/validation`
+
+Can be run manually or from cron/systemd timer for periodic snapshots.
+
+---
+
+## 14. Evaluate, optimize, shadow, promote (after burn-in / live)
+
+After testnet or small-live run, use Stage 3 CLI for evaluation, optimization, shadow comparison, and promotion:
+
+- **Evaluation** (writes to `artifacts/evaluations/`):  
+  `python run_bot.py evaluate [--from-date YYYY-MM-DD] [--to-date YYYY-MM-DD] [--config-id <id>]`
+
+- **Optimization:**  
+  `python run_bot.py optimize run [--config-id <id>] [--from-date ...] [--to-date ...]`  
+  `python run_bot.py optimize report <run_id>`
+
+- **Shadow** (post-hoc comparison):  
+  `python run_bot.py shadow start --candidate-config-id <id>`  
+  `python run_bot.py shadow report <candidate_config_id>`
+
+- **Promote / rollback:**  
+  `python run_bot.py promote --config-id <id>`  
+  `python run_bot.py promote status`  
+  `python run_bot.py config rollback [--reason "reason"]`
+
+See **docs/STAGE3_ADAPTIVE_FRAMEWORK.md** and **docs/OPTIMIZATION_WORKFLOW.md** for details. This flow is **operator-driven**; no automatic promotion.
+
+---
+
+## 15. Exact Ubuntu command cheat sheet
+
+| Action | Command |
+|--------|---------|
+| Install | `./install.sh` |
+| Validate | `source venv/bin/activate && python run_bot.py validate` or `./scripts/validate_env.sh` |
+| Start testnet burn-in | `./scripts/start_testnet_burnin.sh` |
+| Check burn-in | `./scripts/check_burnin.sh` |
+| Small-live readiness | `./scripts/check_small_live_ready.sh` |
+| Start guarded live | `./scripts/start_small_live.sh` |
+| Stop / inspect | `./scripts/incident_stop.sh` |
+| Stop + rollback | `./scripts/incident_stop.sh --rollback "reason"` |
+| Run evaluation | `python run_bot.py evaluate [--from-date YYYY-MM-DD] [--to-date YYYY-MM-DD]` |
+| Run optimizer | `python run_bot.py optimize run [--config-id <id>]` |
+| Shadow report | `python run_bot.py shadow report <candidate_config_id>` |
+| Promote config | `python run_bot.py promote --config-id <id>` |
+| Rollback config | `python run_bot.py config rollback [--reason "reason"]` |
+
+See **docs/BURN_IN_AND_LIVE_VALIDATION.md** for burn-in semantics and **docs/DEPLOYMENT_AND_HEALTHCHECKS.md** for health/status/report details.

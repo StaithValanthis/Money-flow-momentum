@@ -124,3 +124,16 @@ shard_reconnect_backoff_seconds: 30
 repair_missing_protection_on_startup: true
 startup_protection_required: false
 runner_trailing_enabled: true
+
+# Burn-in and live validation (see docs/BURN_IN_OPERATOR_RUNBOOK.md)
+# burn_in:
+#   burn_in_enabled: false
+#   burn_in_phase: testnet   # testnet | live_small | live_guarded
+#   burn_in_max_trades_per_day: 20
+#   burn_in_max_notional_usdt: 5000.0
+#   burn_in_required_report_window_hours: 24.0
+#   burn_in_min_expected_heartbeat_coverage: 0.8
+#   burn_in_fail_on_protection_mismatch: true
+#   burn_in_fail_on_execution_drift: true
+#   burn_in_max_slippage_bps: 50.0
+#   burn_in_max_reconnect_per_hour: 5

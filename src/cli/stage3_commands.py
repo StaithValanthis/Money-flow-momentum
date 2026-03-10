@@ -20,6 +20,7 @@ from src.shadow.shadow_runner import ShadowRunner
 from src.shadow.comparison import compare_baseline_shadow
 from src.promotion.promoter import promote_candidate
 from src.storage.db import Database
+from src.cli.validate_env import validate_environment, ValidationResult
 
 
 def _db_path(config_path: Optional[Path] = None) -> str:
@@ -191,6 +192,25 @@ def shadow_report(
 
 def register_stage3_cli(app: typer.Typer) -> None:
     """Register Stage 3 commands on the main app."""
+    @app.command()
+    def validate(
+        config_path: Optional[Path] = typer.Option(None, "--config", "-c", help="Path to config.yaml"),
+        require_api_keys: bool = typer.Option(True, "--require-api-keys/--no-require-api-keys"),
+    ) -> None:
+        """Validate environment and config: config, .env, dirs, mode/testnet, strategy."""
+        cfg = config_path or Path("config/config.yaml")
+        result: ValidationResult = validate_environment(config_path=cfg, require_api_keys_for_live=require_api_keys)
+        for e in result.errors:
+            typer.echo(f"ERROR: {e}")
+        for w in result.warnings:
+            typer.echo(f"WARN: {w}")
+        if result.ok:
+            typer.echo("Validation OK.")
+            typer.echo("Ready for: testnet burn-in (set burn_in_enabled: true, burn_in_phase: testnet in config). For guarded small-live: set phase: live_small after testnet passes; then ./scripts/check_small_live_ready.sh")
+            raise typer.Exit(0)
+        typer.echo("Validation failed.")
+        raise typer.Exit(1)
+
     app.add_typer(config_app, name="config")
     app.add_typer(optimize_app, name="optimize")
     app.add_typer(shadow_app, name="shadow")
@@ -318,7 +338,30 @@ def register_stage3_cli(app: typer.Typer) -> None:
         if issues:
             typer.echo("Issues: " + "; ".join(issues))
             raise typer.Exit(1)
-        typer.echo("OK")
+
+    @app.command("show-runtime-mode")
+    def show_runtime_mode(
+        config_path: Optional[Path] = typer.Option(None, "--config", "-c"),
+    ) -> None:
+        """Show current mode, burn-in phase, active config, strategy; warn on mode/phase mismatch."""
+        config, env = load_config(config_path)
+        typer.echo(f"mode: {config.mode}")
+        typer.echo(f"exchange.testnet: {config.exchange.testnet}")
+        typer.echo(f"BYBIT_TESTNET (env): {getattr(env, 'bybit_testnet', 'N/A')}")
+        burn_in = getattr(config, "burn_in", None)
+        if burn_in:
+            typer.echo(f"burn_in_enabled: {getattr(burn_in, 'burn_in_enabled', False)}")
+            typer.echo(f"burn_in_phase: {getattr(burn_in, 'burn_in_phase', 'testnet')}")
+        else:
+            typer.echo("burn_in_enabled: false")
+        from src.config.versioning import get_active_config_id
+        aid = get_active_config_id(config.database_path)
+        typer.echo(f"active_config_id: {aid or 'none'}")
+        typer.echo(f"active_strategy: {getattr(config, 'active_strategy', 'flow_impulse')}")
+        if config.mode == "live" and burn_in and getattr(burn_in, "burn_in_phase", "") == "testnet":
+            typer.echo("WARN: mode is live but burn_in_phase is testnet. Set burn_in_phase to live_small for guarded live.")
+        if burn_in and getattr(burn_in, "burn_in_enabled", False) is False:
+            typer.echo("WARN: burn_in_enabled is false during validation phase.")
 
     @app.command()
     def status(
