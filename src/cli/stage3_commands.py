@@ -2,7 +2,7 @@
 
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Any, Dict
 
 import typer
 
@@ -21,12 +21,229 @@ from src.shadow.comparison import compare_baseline_shadow
 from src.promotion.promoter import promote_candidate
 from src.storage.db import Database
 from src.cli.validate_env import validate_environment, ValidationResult
+from src.storage.artifacts import pipeline_dir
+from src.validation.readiness import (
+    compute_readiness,
+    READINESS_READY_TESTNET,
+    READINESS_READY_SMALL_LIVE,
+    ReadinessResult,
+)
 
 
 def _db_path(config_path: Optional[Path] = None) -> str:
     config, _ = load_config(config_path)
     return config.database_path
 
+
+def _parse_date_range(from_date: Optional[str], to_date: Optional[str]) -> tuple[Optional[int], Optional[int]]:
+    """Parse YYYY-MM-DD date strings into epoch ms range (inclusive end-of-day for to_date)."""
+    from_ts = None
+    to_ts = None
+    if from_date:
+        from_ts = int(time.mktime(time.strptime(from_date, "%Y-%m-%d"))) * 1000
+    if to_date:
+        to_ts = int(time.mktime(time.strptime(to_date, "%Y-%m-%d"))) * 1000 + 86400 * 1000 - 1
+    return from_ts, to_ts
+
+
+def run_post_burnin_pipeline(
+    *,
+    config_path: Optional[Path] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    config_id: Optional[str] = None,
+    n_samples: int = 20,
+    window_hours: float = 24.0,
+    start_shadow: bool = False,
+    shadow_report: bool = False,
+    output_dir: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """
+    Run a conservative, manual-first post-burn-in pipeline:
+    1) Readiness
+    2) Evaluation
+    3) Optimization
+    4) Candidate listing
+    5) Optional shadow start/report.
+    Returns a summary dict; no promotion or environment switch is performed.
+    """
+    summary: Dict[str, Any] = {}
+
+    config, env = load_config(config_path)
+    db_path = config.database_path
+    from_ts, to_ts = _parse_date_range(from_date, to_date)
+
+    # Resolve active / selected config id
+    from src.config.versioning import get_active_config_id
+
+    active_config_id = get_active_config_id(db_path)
+    selected_config_id = config_id or active_config_id
+    summary["timestamp_ms"] = int(time.time() * 1000)
+    summary["config_id_active"] = active_config_id
+    summary["config_id_selected"] = selected_config_id
+    summary["from_date"] = from_date
+    summary["to_date"] = to_date
+    summary["from_ts"] = from_ts
+    summary["to_ts"] = to_ts
+
+    db = Database(db_path)
+    try:
+        # 1) Readiness
+        hb_path = Path("artifacts/heartbeat.json")
+        burn = getattr(config, "burn_in", None)
+        phase = getattr(burn, "burn_in_phase", "demo") if burn else "demo"
+        readiness: ReadinessResult = compute_readiness(
+            db,
+            heartbeat_path=hb_path,
+            config_id=selected_config_id,
+            window_hours=window_hours,
+            burn_in_phase=phase,
+        )
+        summary["readiness"] = {
+            "classification": readiness.classification,
+            "message": readiness.message,
+            "details": readiness.details,
+        }
+        acceptable = readiness.classification in (READINESS_READY_TESTNET, READINESS_READY_SMALL_LIVE)
+        summary["readiness_acceptable"] = acceptable
+        next_cmds: list[str] = []
+
+        if not acceptable:
+            # Stop early; tell operator what to review.
+            next_cmds.append("python run_bot.py burnin report --window %.1f" % window_hours)
+            next_cmds.append("python run_bot.py burnin readiness --window %.1f --output artifacts/burnin" % window_hours)
+            summary["evaluation"] = None
+            summary["optimizer"] = None
+            summary["candidates"] = None
+            summary["shadow"] = None
+            summary["next_commands"] = next_cmds
+            return summary
+
+        # 2) Evaluation
+        ev_summary: Dict[str, Any] = {}
+        try:
+            ev = Evaluator(db_path)
+            eval_result = ev.run(from_ts=from_ts, to_ts=to_ts, config_id=selected_config_id, symbol=None)
+            ev_summary = {
+                "run_id": eval_result.get("run_id"),
+                "report_path": eval_result.get("report_path"),
+                "trade_count": eval_result.get("trade_count", 0),
+            }
+        except Exception as e:
+            ev_summary = {"error": str(e)}
+        summary["evaluation"] = ev_summary
+
+        trade_count = ev_summary.get("trade_count") or 0
+        if trade_count <= 0:
+            next_cmds.append("python run_bot.py evaluate --from-date YYYY-MM-DD --to-date YYYY-MM-DD")
+            summary["optimizer"] = None
+            summary["candidates"] = None
+            summary["shadow"] = None
+            summary["next_commands"] = next_cmds
+            return summary
+
+        # 3) Optimization
+        opt_result: Dict[str, Any] = {}
+        try:
+            opt_out = run_optimization(
+                db_path=db_path,
+                config_id=selected_config_id,
+                from_ts=from_ts,
+                to_ts=to_ts,
+                n_samples=n_samples,
+            )
+            opt_result = {
+                "run_id": opt_out.get("run_id"),
+                "best_candidate_config_id": opt_out.get("best_candidate_config_id"),
+            }
+        except Exception as e:
+            opt_result = {"error": str(e)}
+        summary["optimizer"] = opt_result
+
+        run_id = opt_result.get("run_id")
+        best_cand = opt_result.get("best_candidate_config_id")
+
+        # 4) Candidate listing (for this optimizer run if possible)
+        cand_info: Dict[str, Any] = {}
+        try:
+            conn = db._get_conn()
+            rows = []
+            if run_id:
+                rows = conn.execute(
+                    "SELECT config_id, optimizer_run_id, created_at FROM candidate_configs WHERE optimizer_run_id = ? ORDER BY created_at DESC",
+                    (run_id,),
+                ).fetchall()
+            cand_info["count"] = len(rows)
+            if best_cand:
+                cand_info["top_candidate_id"] = best_cand
+            elif rows:
+                cand_info["top_candidate_id"] = rows[0][0]
+            else:
+                cand_info["top_candidate_id"] = None
+            cand_info["optimizer_run_id"] = run_id
+        except Exception as e:
+            cand_info = {"error": str(e), "count": 0, "top_candidate_id": None, "optimizer_run_id": run_id}
+        summary["candidates"] = cand_info
+
+        top_candidate_id = cand_info.get("top_candidate_id")
+
+        # 5) Optional shadow
+        shadow_summary: Dict[str, Any] = {
+            "start_requested": start_shadow,
+            "report_requested": shadow_report,
+            "started": False,
+            "shadow_run_id": None,
+            "report_path": None,
+            "agreement_rate": None,
+        }
+
+        if start_shadow and top_candidate_id:
+            runner = ShadowRunner(db_path)
+            started = runner.start(top_candidate_id)
+            shadow_summary["started"] = started
+            if started:
+                # Find latest shadow_run_id for this candidate
+                conn = db._get_conn()
+                row = conn.execute(
+                    "SELECT id FROM shadow_runs WHERE candidate_config_id = ? ORDER BY started_at DESC LIMIT 1",
+                    (top_candidate_id,),
+                ).fetchone()
+                if row:
+                    shadow_summary["shadow_run_id"] = row[0]
+
+        if shadow_report and top_candidate_id:
+            # Use latest shadow run for this candidate
+            conn = db._get_conn()
+            row = conn.execute(
+                "SELECT id FROM shadow_runs WHERE candidate_config_id = ? ORDER BY started_at DESC LIMIT 1",
+                (top_candidate_id,),
+            ).fetchone()
+            if row:
+                out = compare_baseline_shadow(row[0], db_path)
+                shadow_summary["shadow_run_id"] = row[0]
+                shadow_summary["agreement_rate"] = out.get("agreement_rate")
+                shadow_summary["report_path"] = out.get("report_path")
+
+        summary["shadow"] = shadow_summary
+
+        # 6) Recommended next commands (manual)
+        if top_candidate_id:
+            if not start_shadow:
+                next_cmds.append(f"python run_bot.py shadow start --candidate-config-id {top_candidate_id}")
+            if not shadow_report:
+                next_cmds.append(f"python run_bot.py shadow report --candidate-config-id {top_candidate_id}")
+            next_cmds.append(f"python run_bot.py promote --config-id {top_candidate_id}")
+        else:
+            next_cmds.append("python run_bot.py candidates list")
+
+        next_cmds.append("python run_bot.py promote status")
+        summary["next_commands"] = next_cmds
+        return summary
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
 
 # --- Config subcommand ---
 config_app = typer.Typer(help="Config versioning")
@@ -651,3 +868,90 @@ def register_stage3_cli(app: typer.Typer) -> None:
         db.close()
 
     app.add_typer(burnin_app, name="burnin")
+
+    @app.command("post-burnin")
+    def post_burnin(
+        config_path: Optional[Path] = typer.Option(None, "--config", "-c", help="Path to config.yaml"),
+        from_date: Optional[str] = typer.Option(None, "--from-date", help="Evaluation/optimizer from-date (YYYY-MM-DD)"),
+        to_date: Optional[str] = typer.Option(None, "--to-date", help="Evaluation/optimizer to-date (YYYY-MM-DD)"),
+        config_id: Optional[str] = typer.Option(None, "--config-id", help="Config version to evaluate/optimize (defaults to active)"),
+        n_samples: int = typer.Option(20, "--n-samples", help="Optimizer sample count"),
+        window_hours: float = typer.Option(24.0, "--window", help="Readiness window hours"),
+        start_shadow: bool = typer.Option(False, "--start-shadow", help="Start shadow run for top candidate (does not promote)"),
+        shadow_report: bool = typer.Option(False, "--shadow-report", help="Generate shadow report for latest run of top candidate"),
+        output_dir: Optional[Path] = typer.Option(None, "--output", help="Directory for pipeline summary artifacts (default artifacts/pipeline)"),
+    ) -> None:
+        """
+        Post-burn-in helper: runs readiness, evaluation, optimizer, candidate listing,
+        and optional shadow start/report. Does NOT auto-promote or switch environments.
+        """
+        summary = run_post_burnin_pipeline(
+            config_path=config_path,
+            from_date=from_date,
+            to_date=to_date,
+            config_id=config_id,
+            n_samples=n_samples,
+            window_hours=window_hours,
+            start_shadow=start_shadow,
+            shadow_report=shadow_report,
+            output_dir=output_dir,
+        )
+
+        # Write summary artifact
+        out_base = output_dir or pipeline_dir()
+        out_base = Path(out_base)
+        out_base.mkdir(parents=True, exist_ok=True)
+        ts = summary.get("timestamp_ms") or int(time.time() * 1000)
+        json_path = out_base / f"post_burnin_{ts}.json"
+        md_path = out_base / f"post_burnin_{ts}.md"
+
+        import json as _json
+
+        with open(json_path, "w", encoding="utf-8") as f:
+            _json.dump(summary, f, indent=2, default=str)
+
+        # Human-readable summary
+        with open(md_path, "w", encoding="utf-8") as f:
+            f.write("# Post-burn-in Pipeline Summary\n\n")
+            f.write(f"- timestamp_ms: {summary.get('timestamp_ms')}\n")
+            f.write(f"- active_config_id: {summary.get('config_id_active')}\n")
+            f.write(f"- selected_config_id: {summary.get('config_id_selected')}\n")
+            ready = summary.get("readiness", {})
+            f.write(f"- readiness: {ready.get('classification')} — {ready.get('message')}\n")
+            eval_s = summary.get("evaluation") or {}
+            if eval_s:
+                f.write(f"- evaluation: run_id={eval_s.get('run_id')} report={eval_s.get('report_path')}\n")
+            opt_s = summary.get("optimizer") or {}
+            if opt_s:
+                f.write(f"- optimizer: run_id={opt_s.get('run_id')} best_candidate={opt_s.get('best_candidate_config_id')}\n")
+            cand_s = summary.get("candidates") or {}
+            if cand_s:
+                f.write(f"- candidates: count={cand_s.get('count')} top_candidate_id={cand_s.get('top_candidate_id')}\n")
+            sh_s = summary.get("shadow") or {}
+            if sh_s:
+                f.write(f"- shadow_started: {sh_s.get('started')} shadow_run_id={sh_s.get('shadow_run_id')} agreement_rate={sh_s.get('agreement_rate')}\n")
+            f.write("\n## Next recommended commands\n\n")
+            for cmd in summary.get("next_commands", []):
+                f.write(f"- {cmd}\n")
+
+        # CLI summary
+        typer.echo("=== Post-burn-in pipeline summary ===")
+        typer.echo(f"Readiness: {ready.get('classification')} — {ready.get('message')}")
+        if not summary.get("readiness_acceptable", False):
+            typer.echo("Readiness not acceptable; see burn-in artifacts and summary for details.")
+        else:
+            typer.echo("Readiness acceptable for post-burn-in evaluation/optimization.")
+        if eval_s:
+            typer.echo(f"Evaluation: run_id={eval_s.get('run_id')} report={eval_s.get('report_path')}")
+        if opt_s:
+            typer.echo(f"Optimizer: run_id={opt_s.get('run_id')} best_candidate={opt_s.get('best_candidate_config_id')}")
+        if cand_s:
+            typer.echo(f"Candidates: count={cand_s.get('count')} top_candidate_id={cand_s.get('top_candidate_id')}")
+        if sh_s:
+            typer.echo(f"Shadow: started={sh_s.get('started')} run_id={sh_s.get('shadow_run_id')} agreement_rate={sh_s.get('agreement_rate')}")
+        typer.echo("Summary artifacts:")
+        typer.echo(f"  JSON: {json_path}")
+        typer.echo(f"  Markdown: {md_path}")
+        typer.echo("Next recommended commands:")
+        for cmd in summary.get("next_commands", []):
+            typer.echo(f"  {cmd}")

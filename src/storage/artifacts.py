@@ -39,9 +39,23 @@ def validation_dir(base: Optional[Path] = None) -> Path:
     return artifacts_root(base) / "validation"
 
 
+def pipeline_dir(base: Optional[Path] = None) -> Path:
+    """Directory for post-burn-in / pipeline helper artifacts."""
+    return artifacts_root(base) / "pipeline"
+
+
 def ensure_artifact_dirs(base: Optional[Path] = None) -> None:
     """Create standard artifact directories."""
-    for d in (evaluations_dir(base), optimizations_dir(base), configs_dir(base), shadow_dir(base), backtest_dir(base), burnin_dir(base), validation_dir(base)):
+    for d in (
+        evaluations_dir(base),
+        optimizations_dir(base),
+        configs_dir(base),
+        shadow_dir(base),
+        backtest_dir(base),
+        burnin_dir(base),
+        validation_dir(base),
+        pipeline_dir(base),
+    ):
         d.mkdir(parents=True, exist_ok=True)
 
 
