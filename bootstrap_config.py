@@ -2,6 +2,7 @@
 """Interactive CLI to bootstrap .env and config.yaml. Supports dual-key (demo + live) and demo-first burn-in."""
 
 import os
+import sys
 from pathlib import Path
 
 
@@ -23,34 +24,47 @@ def _read_existing_env() -> dict[str, str]:
 
 def main() -> None:
     """Interactive bootstrap. Prompts for demo keys (recommended); optionally live keys."""
-    print("=== Money Flow Momentum - Config Bootstrap ===\n")
-    print("Dual-key mode: set demo and live keys separately. BYBIT_ENV=demo|live selects which pair is used.")
-    print("Demo keys: create from mainnet account -> Demo Trading. Do not use testnet for demo.\n")
+    if not sys.stdin.isatty():
+        print("ERROR: This script requires an interactive terminal to prompt for API keys.", file=sys.stderr)
+        print("Run it from a real terminal (e.g. SSH with TTY, or your local shell).", file=sys.stderr)
+        print("Alternatively, create .env manually from .env.example and set:", file=sys.stderr)
+        print("  BYBIT_ENV=demo", file=sys.stderr)
+        print("  BYBIT_DEMO_API_KEY=...", file=sys.stderr)
+        print("  BYBIT_DEMO_API_SECRET=...", file=sys.stderr)
+        sys.exit(1)
+
+    print("=== Money Flow Momentum - Config Bootstrap ===\n", flush=True)
+    print("Dual-key mode: set demo and live keys separately. BYBIT_ENV=demo|live selects which pair is used.", flush=True)
+    print("Demo keys: create from mainnet account -> Demo Trading. Do not use testnet for demo.\n", flush=True)
 
     existing = _read_existing_env()
 
-    # Demo keys (recommended for burn-in)
-    default_demo_key = existing.get("BYBIT_DEMO_API_KEY", existing.get("BYBIT_API_KEY", ""))
-    default_demo_secret = existing.get("BYBIT_DEMO_API_SECRET", existing.get("BYBIT_API_SECRET", ""))
-    demo_key = input("Bybit DEMO API Key (from mainnet account Demo Trading): ").strip() or default_demo_key
-    demo_secret = input("Bybit DEMO API Secret: ").strip() or default_demo_secret
+    try:
+        # Demo keys (recommended for burn-in)
+        default_demo_key = existing.get("BYBIT_DEMO_API_KEY", existing.get("BYBIT_API_KEY", ""))
+        default_demo_secret = existing.get("BYBIT_DEMO_API_SECRET", existing.get("BYBIT_API_SECRET", ""))
+        demo_key = input("Bybit DEMO API Key (from mainnet account Demo Trading): ").strip() or default_demo_key
+        demo_secret = input("Bybit DEMO API Secret: ").strip() or default_demo_secret
 
-    add_live = input("Add LIVE/mainnet keys now? (y/n): ").strip().lower() in ("y", "yes", "1")
-    live_key = ""
-    live_secret = ""
-    if add_live:
-        live_key = input("Bybit LIVE API Key: ").strip() or existing.get("BYBIT_LIVE_API_KEY", "")
-        live_secret = input("Bybit LIVE API Secret: ").strip() or existing.get("BYBIT_LIVE_API_SECRET", "")
+        add_live = input("Add LIVE/mainnet keys now? (y/n): ").strip().lower() in ("y", "yes", "1")
+        live_key = ""
+        live_secret = ""
+        if add_live:
+            live_key = input("Bybit LIVE API Key: ").strip() or existing.get("BYBIT_LIVE_API_KEY", "")
+            live_secret = input("Bybit LIVE API Secret: ").strip() or existing.get("BYBIT_LIVE_API_SECRET", "")
 
-    default_env = existing.get("BYBIT_ENV", "demo").strip().lower()
-    if default_env not in ("demo", "live", "testnet"):
-        default_env = "demo"
-    env_choice = input("Default BYBIT_ENV (demo/live/testnet) [demo]: ").strip().lower() or default_env or "demo"
-    if env_choice not in ("demo", "live", "testnet"):
-        env_choice = "demo"
+        default_env = existing.get("BYBIT_ENV", "demo").strip().lower()
+        if default_env not in ("demo", "live", "testnet"):
+            default_env = "demo"
+        env_choice = input("Default BYBIT_ENV (demo/live/testnet) [demo]: ").strip().lower() or default_env or "demo"
+        if env_choice not in ("demo", "live", "testnet"):
+            env_choice = "demo"
 
-    risk_pct = input("Risk per trade % (default 0.5): ").strip() or "0.5"
-    max_pos = input("Max concurrent positions (default 5): ").strip() or "5"
+        risk_pct = input("Risk per trade % (default 0.5): ").strip() or "0.5"
+        max_pos = input("Max concurrent positions (default 5): ").strip() or "5"
+    except (EOFError, KeyboardInterrupt):
+        print("\nAborted. No changes written.", file=sys.stderr)
+        sys.exit(1)
 
     # Build .env: demo + live dual-key preferred
     env_lines = [
@@ -105,3 +119,7 @@ risk:
     print("\nDone. Validate: python run_bot.py validate")
     print("Demo burn-in: BYBIT_ENV=demo, then ./scripts/start_testnet_burnin.sh (or run_bot.py run)")
     print("Guarded live: set BYBIT_ENV=live and burn_in_phase: live_small when ready; ./scripts/check_small_live_ready.sh")
+
+
+if __name__ == "__main__":
+    main()
