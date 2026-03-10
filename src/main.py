@@ -188,7 +188,9 @@ class TradingBot:
                     intent_qty = r.get("intent_qty")
                 record_fill(self._db, order_id, qty, price, ts, intent_price=intent_price, intent_qty=intent_qty)
             try:
-                self._db.insert_fill(ts, data.get("execId", "") or data.get("executionId", ""), order_id, symbol, side, qty, price, closed_pnl, config_id=getattr(self, "_config_id", None))
+                exec_id = data.get("execId", "") or data.get("executionId", "")
+                self._db.insert_fill(ts, exec_id, order_id, symbol, side, qty, price, closed_pnl, config_id=getattr(self, "_config_id", None))
+                self._db.insert_trade(ts, symbol, side, qty, price, order_id=order_id, order_link_id=link, pnl=closed_pnl, config_id=getattr(self, "_config_id", None))
             except Exception:
                 pass
 
@@ -414,6 +416,18 @@ class TradingBot:
                 event_name = "tp2_fill_partial"
 
         self._db.insert_lifecycle_event(ts, symbol, event_name, lc.phase.value, config_id=self._config_id)
+
+        if self._db:
+            try:
+                order_id = data.get("orderId", "") or ""
+                exec_id = data.get("execId", "") or data.get("executionId", "") or ""
+                exec_price = float(data.get("execPrice", 0) or 0)
+                closed_pnl = float(data.get("closedPnl", 0) or 0)
+                if order_id and exec_id:
+                    self._db.insert_fill(ts, exec_id, order_id, symbol, side, fill_qty, exec_price, closed_pnl, config_id=getattr(self, "_config_id", None))
+                self._db.insert_trade(ts, symbol, side, fill_qty, exec_price, order_id=order_id, order_link_id="", pnl=closed_pnl, config_id=getattr(self, "_config_id", None))
+            except Exception as e:
+                log.debug(f"TP fill insert_fill/insert_trade: {e}")
 
     def _boot(self) -> bool:
         """Boot: account, universe, sync, WS, recovery."""

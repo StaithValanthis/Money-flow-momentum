@@ -249,3 +249,107 @@ def test_automation_evaluates_and_optimizes_when_ready(tmp_path: Path, monkeypat
     data = json.loads(json_path.read_text(encoding="utf-8"))
     assert data.get("snapshot", {}).get("best_candidate_config_id") == "candidate_xyz"
 
+
+def test_readiness_and_evaluator_use_trades_table(tmp_path: Path) -> None:
+    """Readiness trade_count and evaluator use the trades table; execution_audit alone is not enough."""
+    db_path = tmp_path / "bot.db"
+    db = Database(str(db_path))
+
+    # Simulate what the bot now does on fill: insert_trade (and insert_fill/execution_audit are separate)
+    now_ms = int(__import__("time").time() * 1000)
+    # Place trades well inside the 24h window to avoid boundary issues
+    window_start = now_ms - 24 * 3600 * 1000
+    for i in range(5):
+        db.insert_trade(
+            ts=window_start + (i + 1) * 3600 * 1000,
+            symbol="BTCUSDT",
+            side="Buy",
+            qty=0.01,
+            price=50000.0,
+            order_id=f"entry_oid_{i}",
+            order_link_id=f"entry_{i}",
+            pnl=0.0,
+            config_id=None,
+        )
+    db.close()
+
+    from src.validation.readiness import compute_readiness
+
+    db2 = Database(str(db_path))
+    result = compute_readiness(db2, config_id=None, window_hours=24.0, burn_in_phase="demo")
+    db2.close()
+    assert result.details.get("trade_count") == 5
+
+    from src.evaluation.evaluator import Evaluator
+
+    ev = Evaluator(str(db_path))
+    from_ts = now_ms - 25 * 3600 * 1000
+    to_ts = now_ms + 1000
+    summary = ev.run(from_ts=from_ts, to_ts=to_ts, config_id=None)
+    assert summary["trade_count"] == 5
+
+
+def test_automation_progresses_past_waiting_when_trades_in_db(tmp_path: Path, monkeypatch) -> None:
+    """When DB has trades (as after Demo fills with insert_trade), automation can progress past WAITING_FOR_BURNIN_DATA."""
+    db_path = tmp_path / "bot.db"
+    db = Database(str(db_path))
+    now_ms = int(__import__("time").time() * 1000)
+    for i in range(10):
+        db.insert_trade(
+            ts=now_ms - 12 * 3600 * 1000 + i * 3600 * 1000,
+            symbol="BTCUSDT",
+            side="Buy",
+            qty=0.01,
+            price=50000.0,
+            order_id=f"oid_{i}",
+            pnl=0.0,
+            config_id=None,
+        )
+    db.close()
+
+    from src.automation.orchestrator import run_demo_automation_cycle
+    from src.config.config import AutomationConfig, BurnInConfig, Config, EnvSettings
+
+    cfg = Config()
+    cfg.database_path = str(db_path)
+    cfg.automation = AutomationConfig(
+        enabled=True,
+        demo_orchestration_enabled=True,
+        min_trades_for_auto_evaluation=5,
+        min_hours_between_evaluations=0.5,
+        min_hours_between_optimizer_runs=1.0,
+    )
+    cfg.burn_in = BurnInConfig(burn_in_enabled=True, burn_in_phase="demo")
+    env = EnvSettings()
+    env.bybit_env = "demo"
+
+    def _fake_load_config(_path):
+        return cfg, env
+
+    class FakeEvaluator:
+        def __init__(self, db_path: str) -> None:
+            self.db_path = db_path
+
+        def run(self, from_ts=None, to_ts=None, config_id=None, symbol=None, **kwargs):
+            return {"run_id": "eval_ok", "trade_count": 10, "report_path": str(tmp_path / "eval.md")}
+
+    def _fake_run_optimization(*, db_path: str, config_id: str, from_ts: int, to_ts: int, n_samples: int, **kwargs):
+        return {"run_id": "opt_ok", "best_candidate_config_id": "cand_xyz"}
+
+    class FakeShadowRunner:
+        def __init__(self, db_path: str) -> None:
+            self.db_path = db_path
+        def start(self, candidate_config_id: str) -> bool:
+            return True
+
+    monkeypatch.setattr("src.automation.orchestrator.load_config", _fake_load_config)
+    monkeypatch.setattr("src.automation.orchestrator.Evaluator", FakeEvaluator)
+    monkeypatch.setattr("src.automation.orchestrator.run_optimization", _fake_run_optimization)
+    monkeypatch.setattr("src.automation.orchestrator.ShadowRunner", FakeShadowRunner)
+
+    out = run_demo_automation_cycle(config_path=Path("dummy.yaml"))
+    snap = out["snapshot"]
+    # Real compute_readiness sees trade_count=10 from DB; automation progresses past WAITING_FOR_BURNIN_DATA
+    assert snap["state"] != "WAITING_FOR_BURNIN_DATA"
+    assert snap.get("last_evaluation_run_id") == "eval_ok"
+

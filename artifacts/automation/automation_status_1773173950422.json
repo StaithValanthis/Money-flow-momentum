@@ -1,29 +1,29 @@
 {
-  "timestamp_ms": 1773173960608,
+  "timestamp_ms": 1773173950422,
   "state": "AWAITING_MANUAL_APPROVAL",
   "automation": {
     "enabled": true
   },
   "snapshot": {
     "state": "AWAITING_MANUAL_APPROVAL",
-    "last_readiness_ts": 1773173960604,
+    "last_readiness_ts": 1773173950415,
     "last_readiness_classification": "NEEDS_REVIEW",
     "last_evaluation_run_id": "eval_ok",
-    "last_evaluation_ts": 1773173960604,
+    "last_evaluation_ts": 1773173950415,
     "last_optimizer_run_id": "opt_ok",
-    "last_optimizer_ts": 1773173960604,
+    "last_optimizer_ts": 1773173950415,
     "best_candidate_config_id": "cand_xyz",
     "shadow_candidate_config_id": "cand_xyz",
     "last_recommendation_status": "READY_FOR_CONFIG_REVIEW",
     "blocked_reason": null,
     "last_error": null,
-    "updated_ts": 1773173960607
+    "updated_ts": 1773173950419
   },
   "active_config_id": null,
   "readiness_details": {
     "window_hours": 24.0,
-    "from_ts": 1773087560606,
-    "to_ts": 1773173960606,
+    "from_ts": 1773087550418,
+    "to_ts": 1773173950418,
     "config_id": null,
     "phase": "demo",
     "protection_mismatch_count": 0,
@@ -39,7 +39,7 @@
   "last_evaluation_summary": {
     "run_id": "eval_ok",
     "trade_count": 10,
-    "report_path": "C:\\Users\\User\\AppData\\Local\\Temp\\pytest-of-User\\pytest-34\\test_automation_progresses_pas0\\eval.md"
+    "report_path": "C:\\Users\\User\\AppData\\Local\\Temp\\pytest-of-User\\pytest-33\\test_automation_progresses_pas0\\eval.md"
   },
   "optimizer_run_id": "opt_ok",
   "candidate_count": null,
