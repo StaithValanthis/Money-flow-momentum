@@ -46,13 +46,15 @@ python bootstrap_config.py
 
 - Prompts for **demo** API keys (Bybit Demo Trading; create from mainnet account → Demo Trading), optionally **live** keys.
 - Writes `.env` with `BYBIT_ENV`, `BYBIT_DEMO_API_KEY/SECRET`, `BYBIT_LIVE_API_KEY/SECRET`.
-- Creates or updates `config/config.yaml`.
+- Creates or updates `config/config.yaml`. If you choose **demo**, the generated config has `mode: paper`, `burn_in.burn_in_enabled: true`, and `burn_in.burn_in_phase: demo`, so you can run demo burn-in without editing YAML.
 
 Or create `.env` manually from `.env.example` (set `BYBIT_ENV=demo`, demo and optionally live keys).
 
-### 1.4 Edit config for demo burn-in
+### 1.4 Edit config (optional)
 
-Edit `config/config.yaml`:
+Only needed if you want to change risk/limits or did not use bootstrap with demo. If you used bootstrap with **demo**, burn-in is already enabled.
+
+To enable or adjust burn-in manually, edit `config/config.yaml`:
 
 - `mode: paper`
 - Enable burn-in and set phase to `demo`:

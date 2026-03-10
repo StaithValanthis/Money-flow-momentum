@@ -69,10 +69,9 @@ if [ ! -f ".env" ]; then
 fi
 
 echo "--- Next steps ---"
-echo "1. Edit config/config.yaml: set mode, burn_in.burn_in_enabled=true, burn_in.burn_in_phase=demo."
-echo "2. If using paper/live: python bootstrap_config.py (or create .env from .env.example)."
-echo "3. Validate: source venv/bin/activate && python run_bot.py validate"
-echo "4. Show runtime mode: python run_bot.py show-runtime-mode"
-echo "5. Start demo burn-in: ./scripts/start_testnet_burnin.sh (see docs/INSTALL_AND_RUN_GUIDE.md)"
-echo "6. Optional systemd: ./scripts/install_systemd.sh"
+echo "1. Run bootstrap: python3 bootstrap_config.py (with BYBIT_ENV=demo, config will have burn-in enabled for demo)."
+echo "2. Validate: source venv/bin/activate && python3 run_bot.py validate"
+echo "3. Show runtime mode: python3 run_bot.py show-runtime-mode"
+echo "4. Start demo burn-in: ./scripts/start_testnet_burnin.sh (see docs/INSTALL_AND_RUN_GUIDE.md)"
+echo "5. Optional systemd: ./scripts/install_systemd.sh"
 echo "Install complete."
