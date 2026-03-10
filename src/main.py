@@ -64,6 +64,7 @@ class TradingBot:
         self._recon: Optional[ReconciliationStore] = None
         self._ws_shards: Optional[PublicWSShardManager] = None
         self._equity_usdt: float = 10_000.0
+        self._available_balance_usdt: Optional[float] = None
         self._startup_sync_done = False
         self._config_id: Optional[str] = None
         self._last_degradation_check_ts: float = 0.0
@@ -196,13 +197,21 @@ class TradingBot:
             r = self._client.get_wallet_balance(account_type="UNIFIED")
             lst = r.get("result", {}).get("list", [])
             if lst:
-                total = lst[0].get("totalEquity")
+                acc = lst[0]
+                total = acc.get("totalEquity")
+                avail = acc.get("totalAvailableBalance")
+                self._available_balance_usdt = float(avail) if avail is not None else None
                 if total is not None:
                     return float(total)
         except Exception as e:
             log.warning(f"Fetch equity: {e}")
             self._risk.record_api_error()
+        self._available_balance_usdt = None
         return self._equity_usdt
+
+    def _fetch_available_balance(self) -> Optional[float]:
+        """Return USDT available balance (USD) for sizing cap, or None if unavailable."""
+        return getattr(self, "_available_balance_usdt", None)
 
     def _tp_fractions(self) -> tuple[float, float]:
         """Return (tp1_fraction, tp2_fraction), scaled if sum > 1."""
@@ -825,9 +834,13 @@ class TradingBot:
                         qty_step = self._universe.get_qty_step(sig.symbol)
                         min_qty = self._universe.get_min_qty(sig.symbol)
                         min_notional = self._universe.get_min_notional(sig.symbol)
+                        max_notional_cap = self.config.risk.max_notional_per_symbol_usdt
+                        avail = self._fetch_available_balance()
+                        if avail is not None and avail > 0:
+                            max_notional_cap = min(max_notional_cap, max(10.0, avail * 0.95))
                         sizing = self._risk.compute_position_size(
                             sig.symbol, side, entry_price, stop, qty_step, min_qty, min_notional,
-                            self.config.risk.max_notional_per_symbol_usdt,
+                            max_notional_cap,
                         )
                         if sizing.reject_reason:
                             self._db.insert_entry_decision(now_ms, sig.symbol, sig.direction, f"rejected:sizing:{sizing.reject_reason}", sig.score, self.config.dry_run, config_id=self._config_id)
@@ -937,9 +950,13 @@ class TradingBot:
                             qty_step = self._universe.get_qty_step(sig.symbol)
                             min_qty = self._universe.get_min_qty(sig.symbol)
                             min_notional = self._universe.get_min_notional(sig.symbol)
+                            max_notional_cap = self.config.risk.max_notional_per_symbol_usdt
+                            avail = self._fetch_available_balance()
+                            if avail is not None and avail > 0:
+                                max_notional_cap = min(max_notional_cap, max(10.0, avail * 0.95))
                             sizing = self._risk.compute_position_size(
                                 sig.symbol, side, entry_price, stop, qty_step, min_qty, min_notional,
-                                self.config.risk.max_notional_per_symbol_usdt,
+                                max_notional_cap,
                             )
                             if sizing.reject_reason:
                                 self._db.insert_entry_decision(now_ms, sig.symbol, sig.direction, f"rejected:sizing:{sizing.reject_reason}", sig.score, self.config.dry_run, config_id=self._config_id)

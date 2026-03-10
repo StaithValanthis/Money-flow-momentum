@@ -72,19 +72,27 @@ class BybitClient:
         self._last_request_time = time.monotonic()
 
     def _retry_rest(self, fn: Callable[[], Any], max_retries: int = 3) -> Any:
-        """Execute REST call with retry and backoff."""
+        """Execute REST call with retry and backoff. Do not retry on 110007 (insufficient balance)."""
         last_err: Optional[Exception] = None
         for attempt in range(max_retries):
             self._rate_limit()
             try:
                 result = fn()
-                if hasattr(result, "get") and result.get("retCode") != 0:
+                ret_code = result.get("retCode")
+                if ret_code == 110007:
                     raise RuntimeError(
-                        f"Bybit API error: {result.get('retMsg', 'Unknown')} (code={result.get('retCode')})"
+                        "Insufficient available balance for order (110007). "
+                        "Reduce max_notional_per_symbol_usdt or close some positions."
+                    )
+                if ret_code is not None and ret_code != 0:
+                    raise RuntimeError(
+                        f"Bybit API error: {result.get('retMsg', 'Unknown')} (code={ret_code})"
                     )
                 return result
             except Exception as e:
                 last_err = e
+                if "110007" in str(e) or (hasattr(e, "args") and e.args and "110007" in str(e.args[0])):
+                    raise
                 if attempt < max_retries - 1:
                     delay = 2 ** attempt
                     log.warning(f"REST retry {attempt + 1}/{max_retries} after {e}, sleeping {delay}s")
