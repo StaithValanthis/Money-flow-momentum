@@ -27,11 +27,13 @@ def _format_record(record: dict[str, Any]) -> str:
     extra = _get(record, "extra") or {}
     module = extra.get("module", "main") if isinstance(extra, dict) else "main"
     msg = _get(record, "message") or ""
+    # Escape braces so Loguru's format_map() won't interpret e.g. {category} in URLs
+    msg_escaped = msg.replace("{", "{{").replace("}", "}}")
     return (
         f"<green>{time_str}</green> | "
         f"<level>{level_name: <8}</level> | "
         f"<cyan>{module}</cyan> | "
-        f"<level>{msg}</level>"
+        f"<level>{msg_escaped}</level>\n"
     )
 
 

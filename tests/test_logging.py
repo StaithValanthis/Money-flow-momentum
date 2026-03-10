@@ -35,6 +35,24 @@ def test_format_record_without_extra_module():
     assert "no module" in out
 
 
+def test_format_record_escapes_braces_in_message():
+    """Messages with { or } are escaped so Loguru format_map does not raise KeyError."""
+    from datetime import datetime
+    record = {
+        "time": datetime(2025, 3, 9, 12, 0, 0, 123000),
+        "level": type("Level", (), {"name": "INFO"})(),
+        "extra": {"module": "test"},
+        "message": "Request → GET https://api.example.com/v5/position/list: category=linear&symbol=0GUSDT.",
+    }
+    out = _format_record(record)
+    assert "category=linear" in out
+    assert out.endswith("\n")
+    # Message with braces: should appear escaped (double braces) so format_map won't KeyError
+    record["message"] = "params: {category}"
+    out2 = _format_record(record)
+    assert "{{category}}" in out2
+
+
 def test_setup_logging_and_log_no_crash():
     """setup_logging() and a few log lines do not raise (e.g. no extra.get in format)."""
     setup_logging(level="DEBUG")
