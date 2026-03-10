@@ -238,6 +238,29 @@ class Database:
         except Exception as e:
             log.error(f"DB insert kill_switch: {e}")
 
+    def get_kill_switch_events(
+        self,
+        since_ts: Optional[int] = None,
+        to_ts: Optional[int] = None,
+    ) -> list[dict]:
+        """Return kill-switch events in [since_ts, to_ts] as list of dicts with ts, reason."""
+        try:
+            conn = self._get_conn()
+            sql = "SELECT ts, reason FROM kill_switch_events WHERE 1=1"
+            params: list = []
+            if since_ts is not None:
+                sql += " AND ts >= ?"
+                params.append(since_ts)
+            if to_ts is not None:
+                sql += " AND ts <= ?"
+                params.append(to_ts)
+            sql += " ORDER BY ts ASC"
+            rows = conn.execute(sql, params).fetchall()
+            return [{"ts": r[0], "reason": r[1] or ""} for r in rows]
+        except Exception as e:
+            log.debug(f"get_kill_switch_events: {e}")
+            return []
+
     def insert_fill(
         self,
         ts: int,

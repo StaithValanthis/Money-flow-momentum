@@ -1,6 +1,7 @@
 """Stage 3 CLI: config, evaluate, optimize, shadow, promote, rollback."""
 
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, Any, Dict
 
@@ -826,6 +827,15 @@ def register_stage3_cli(app: typer.Typer) -> None:
             typer.echo(f"Execution drift count: {drift}")
             typer.echo(f"Protection audit records: {len(prot)}")
             typer.echo(f"Gate breaches: {len(breaches)}")
+            kill_events = db.get_kill_switch_events(since_ts=from_ts, to_ts=to_ts)
+            typer.echo(f"Kill switch events: {len(kill_events)}")
+            for ev in kill_events:
+                ts_val = ev.get("ts")
+                if isinstance(ts_val, int):
+                    ts_str = datetime.utcfromtimestamp(ts_val / 1000.0).strftime("%Y-%m-%d %H:%M:%S UTC")
+                else:
+                    ts_str = str(ts_val)
+                typer.echo(f"  {ts_str}  {ev.get('reason', '')}")
         except Exception as e:
             typer.echo(f"Error: {e}")
         db.close()
