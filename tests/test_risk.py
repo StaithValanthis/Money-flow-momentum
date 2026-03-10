@@ -29,7 +29,7 @@ def test_can_open_position():
     """Test position limit."""
     config = RiskConfig(max_concurrent_positions=2)
     engine = RiskEngine(config)
-    ok, _ = engine.can_open_position(0, "BTCUSDT")
+    ok, _ = engine.can_open_position(0, symbol="BTCUSDT")
     assert ok
-    ok, _ = engine.can_open_position(2, "BTCUSDT")
+    ok, _ = engine.can_open_position(2, symbol="BTCUSDT")
     assert not ok

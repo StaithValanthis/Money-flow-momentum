@@ -89,6 +89,14 @@ class EntryThresholds(BaseModel):
     max_atr_extension: float = 2.0
     divergence_bonus: float = 0.3
     max_correlation_positions: int = 5
+    # Stage 4: adaptive / regime
+    use_adaptive_thresholds: bool = False
+    use_regime_filter: bool = False
+    regime_block_trend: bool = False
+    regime_block_chop: bool = False
+    anti_chase_penalty: float = 0.0
+    persistence_bonus: float = 0.0
+    max_positions_per_cluster: int = 2
 
 
 class StopTPConfig(BaseModel):
@@ -103,6 +111,15 @@ class StopTPConfig(BaseModel):
     max_hold_seconds: int = 3600
     flow_reversal_exit: bool = True
     flow_reversal_delta_threshold: float = -0.5
+    trailing_stop_atr_multiple: float = Field(default=1.0, ge=0.5)
+    time_stop_bars: int = Field(default=60, ge=0)
+    # Stage 4 exit refinements
+    exhaustion_exit_enabled: bool = False
+    exhaustion_flow_price_ratio_max: float = 2.0
+    failed_breakout_exit_enabled: bool = False
+    failed_breakout_reversal_pct: float = 0.003
+    volatility_aware_time_stop: bool = False
+    time_stop_vol_multiplier: float = 1.0
 
 
 class RiskConfig(BaseModel):
@@ -110,13 +127,34 @@ class RiskConfig(BaseModel):
 
     risk_per_trade_pct: float = Field(default=0.5, ge=0.1, le=2.0)
     max_concurrent_positions: int = Field(default=5, ge=1, le=20)
+    max_positions_per_side: int = Field(default=3, ge=1, le=10)
     max_total_risk_pct: float = Field(default=2.0, ge=0.5, le=10.0)
     max_daily_drawdown_pct: float = Field(default=5.0, ge=1.0, le=20.0)
+    max_daily_realized_loss_usdt: float = Field(default=500.0, ge=0)
     max_notional_per_symbol_usdt: float = 10_000.0
+    max_portfolio_notional_usdt: float = Field(default=50_000.0, ge=0)
     min_notional_per_trade_usdt: float = 10.0
     cooldown_after_loss_seconds: int = 300
+    reentry_cooldown_seconds: int = Field(default=60, ge=0)
     kill_switch_enabled: bool = True
     stale_data_seconds: float = 60.0
+    max_trades_per_hour: int = Field(default=30, ge=1, le=200)
+    api_error_threshold: int = Field(default=10, ge=1)
+    symbol_cooldown_after_stop_seconds: int = Field(default=600, ge=0)
+    # Stage 5 portfolio risk budgeting
+    max_long_risk_pct: float = Field(default=0, ge=0, le=10.0)
+    max_short_risk_pct: float = Field(default=0, ge=0, le=10.0)
+    max_cluster_risk_pct: float = Field(default=0, ge=0, le=10.0)
+    allocation_method: str = Field(default="equal_risk", pattern="^(equal_risk|score_weighted|capped_score_weighted|cluster_aware)$")
+
+
+class PortfolioExposureConfig(BaseModel):
+    """Stage 5: exposure and correlation controls."""
+
+    max_gross_exposure_per_cluster_pct: float = Field(default=0, ge=0, le=100)
+    max_risk_per_cluster_pct: float = Field(default=0, ge=0, le=20)
+    max_correlated_positions: int = Field(default=0, ge=0, le=20)
+    same_direction_concentration_penalty_pct: float = Field(default=0, ge=0, le=50)
 
 
 class ExecutionConfig(BaseModel):
@@ -127,6 +165,21 @@ class ExecutionConfig(BaseModel):
     post_only_limit: bool = False
     reduce_only_exits: bool = True
     idempotent_order_link: bool = True
+
+
+class BurnInConfig(BaseModel):
+    """Burn-in / validation mode: stricter limits and validation artifacts."""
+
+    burn_in_enabled: bool = False
+    burn_in_phase: str = Field(default="testnet", pattern="^(testnet|live_small|live_guarded)$")
+    burn_in_max_trades_per_day: int = Field(default=20, ge=1, le=200)
+    burn_in_max_notional_usdt: float = Field(default=5_000.0, ge=100, le=500_000)
+    burn_in_required_report_window_hours: float = Field(default=24.0, ge=1, le=168)
+    burn_in_min_expected_heartbeat_coverage: float = Field(default=0.8, ge=0, le=1)
+    burn_in_fail_on_protection_mismatch: bool = True
+    burn_in_fail_on_execution_drift: bool = True
+    burn_in_max_slippage_bps: float = Field(default=50.0, ge=5, le=500)
+    burn_in_max_reconnect_per_hour: int = Field(default=5, ge=0, le=50)
 
 
 class LoggingConfig(BaseModel):
@@ -143,6 +196,8 @@ class Config(BaseModel):
     """Main application configuration."""
 
     mode: str = Field(default="paper", pattern="^(dry_run|paper|live)$")
+    dry_run: bool = False
+    demo_mode: bool = False
     exchange: ExchangeConfig = Field(default_factory=ExchangeConfig)
     universe: UniverseConfig = Field(default_factory=UniverseConfig)
     features: FeatureConfig = Field(default_factory=FeatureConfig)
@@ -151,10 +206,37 @@ class Config(BaseModel):
     stop_tp: StopTPConfig = Field(default_factory=StopTPConfig)
     risk: RiskConfig = Field(default_factory=RiskConfig)
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
+    burn_in: BurnInConfig = Field(default_factory=BurnInConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    portfolio_exposure: PortfolioExposureConfig = Field(default_factory=PortfolioExposureConfig)
     database_path: str = "data/bot.db"
     scan_interval_seconds: float = 5.0
+    score_interval_seconds: float = Field(default=5.0, ge=1)
     health_check_interval_seconds: float = 30.0
+    stage4_enabled: bool = True
+    stage5_enabled: bool = True
+    active_strategy: str = Field(default="flow_impulse", pattern="^(flow_impulse)$")
+    # Context refresh (seconds)
+    kline_refresh_seconds: float = Field(default=60, ge=30)
+    oi_refresh_seconds: float = Field(default=60, ge=30)
+    funding_refresh_seconds: float = Field(default=300, ge=60)
+    long_short_ratio_refresh_seconds: float = Field(default=300, ge=60)
+    instrument_refresh_seconds: float = Field(default=600, ge=300)
+    context_staleness_seconds: float = Field(default=120, ge=60)
+    # WS
+    public_ws_max_symbols_per_connection: int = Field(default=50, ge=1, le=200)
+    public_ws_stale_timeout_seconds: float = Field(default=90, ge=30)
+    private_ws_stale_timeout_seconds: float = Field(default=120, ge=30)
+    # Reconciliation
+    rest_reconciliation_interval_seconds: float = Field(default=60, ge=30)
+    recover_orphan_positions: bool = True
+    emergency_flatten_on_startup: bool = False
+    # Protection / trailing / shards
+    trailing_stop_update_seconds: float = Field(default=15.0, ge=5)
+    shard_reconnect_backoff_seconds: float = Field(default=30.0, ge=5)
+    repair_missing_protection_on_startup: bool = True
+    startup_protection_required: bool = False
+    runner_trailing_enabled: bool = True
 
 
 def load_config(config_path: Optional[Path] = None) -> tuple[Config, EnvSettings]:
@@ -174,4 +256,8 @@ def load_config(config_path: Optional[Path] = None) -> tuple[Config, EnvSettings
     data["exchange"]["testnet"] = env.bybit_testnet
 
     config = Config.model_validate(data)
+    if config.mode == "dry_run":
+        config.dry_run = True
+    if config.mode == "paper":
+        config.demo_mode = True
     return config, env

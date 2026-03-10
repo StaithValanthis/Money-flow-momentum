@@ -56,22 +56,28 @@ class PositionManager:
         return list(self._positions.values())
 
     def sync_from_exchange(self, positions: list[dict]) -> None:
-        """Sync from exchange position list."""
-        by_symbol = {p.get("symbol", ""): p for p in positions if p.get("symbol") and float(p.get("size", 0) or 0) > 0}
+        """Sync from exchange position list. Size can be negative for short."""
+        by_symbol = {}
+        for p in positions:
+            sym = p.get("symbol", "")
+            if not sym:
+                continue
+            size = float(p.get("size", 0) or 0)
+            if size == 0:
+                continue
+            by_symbol[sym] = p
         for sym, pos in list(self._positions.items()):
             if sym not in by_symbol:
                 self._positions.pop(sym, None)
         for sym, ex in by_symbol.items():
             size = float(ex.get("size", 0) or 0)
-            if size <= 0:
-                continue
-            side = "Buy" if float(ex.get("size", 0) or 0) > 0 else "Sell"
+            side = "Buy" if size > 0 else "Sell"
             if ex.get("side"):
                 side = ex["side"]
             self._positions[sym] = TrackedPosition(
                 symbol=sym,
                 side=side,
-                size=size,
+                size=abs(size),
                 entry_price=float(ex.get("avgPrice", 0) or 0),
                 stop_loss=float(ex.get("stopLoss", 0) or 0),
                 take_profit=float(ex.get("takeProfit", 0) or 0),

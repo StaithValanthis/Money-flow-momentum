@@ -1,0 +1,107 @@
+context_staleness_seconds: 120.0
+database_path: data/bot.db
+demo_mode: false
+dry_run: false
+emergency_flatten_on_startup: false
+entry:
+  divergence_bonus: 0.3
+  long_threshold: 1.8
+  max_atr_extension: 2.0
+  max_buy_sell_ratio_short: 0.95
+  max_correlation_positions: 5
+  max_spread_bps: 30.0
+  min_buy_sell_ratio_long: 1.05
+  min_delta_1m: 0.0
+  short_threshold: -1.8
+exchange:
+  default_leverage: 5
+  max_reconnect_attempts: 10
+  one_way_mode: true
+  rate_limit_requests_per_second: 5.0
+  request_timeout: 10.0
+  testnet: true
+  ws_ping_interval: 20.0
+  ws_reconnect_delay: 5.0
+execution:
+  idempotent_order_link: true
+  post_only_limit: false
+  reduce_only_exits: true
+  slippage_bps: 20.0
+  use_market_orders: true
+features:
+  atr_period: 14
+  volatility_window: 60
+  window_1m: 60
+  window_30s: 30
+  window_3m: 180
+  window_5m: 300
+funding_refresh_seconds: 300.0
+health_check_interval_seconds: 30.0
+instrument_refresh_seconds: 600.0
+kline_refresh_seconds: 60.0
+logging:
+  level: INFO
+  log_file: null
+  retention: 7 days
+  rotation: 10 MB
+  structured: true
+long_short_ratio_refresh_seconds: 300.0
+mode: paper
+oi_refresh_seconds: 60.0
+private_ws_stale_timeout_seconds: 120.0
+public_ws_max_symbols_per_connection: 50
+public_ws_stale_timeout_seconds: 90.0
+recover_orphan_positions: true
+repair_missing_protection_on_startup: true
+rest_reconciliation_interval_seconds: 60.0
+risk:
+  api_error_threshold: 10
+  cooldown_after_loss_seconds: 300
+  kill_switch_enabled: true
+  max_concurrent_positions: 5
+  max_daily_drawdown_pct: 5.0
+  max_daily_realized_loss_usdt: 500.0
+  max_notional_per_symbol_usdt: 10000.0
+  max_portfolio_notional_usdt: 50000.0
+  max_positions_per_side: 3
+  max_total_risk_pct: 2.0
+  max_trades_per_hour: 30
+  min_notional_per_trade_usdt: 10.0
+  reentry_cooldown_seconds: 60
+  risk_per_trade_pct: 0.5
+  stale_data_seconds: 60.0
+  symbol_cooldown_after_stop_seconds: 600
+runner_trailing_enabled: true
+scan_interval_seconds: 5.0
+score_interval_seconds: 5.0
+score_weights:
+  w1_delta_1m: 0.25
+  w2_cvd_slope_3m: 0.2
+  w3_buy_sell_ratio_1m: 0.2
+  w4_price_return_1m: 0.15
+  w5_oi_change: 0.1
+  w6_spread_penalty: 0.05
+  w7_funding_penalty: 0.05
+shard_reconnect_backoff_seconds: 30.0
+startup_protection_required: false
+stop_tp:
+  atr_multiplier_sl: 1.5
+  breakeven_after_tp1: true
+  flow_reversal_delta_threshold: -0.5
+  flow_reversal_exit: true
+  max_hold_seconds: 3600
+  time_stop_bars: 60
+  tp1_pct: 0.33
+  tp1_r_multiple: 1.0
+  tp2_pct: 0.33
+  tp2_r_multiple: 2.0
+  trailing_stop_atr_multiple: 1.0
+trailing_stop_update_seconds: 15.0
+universe:
+  allowlist: []
+  blocklist: []
+  max_spread_bps: 50.0
+  min_24h_turnover_usdt: 1000000.0
+  min_notional_usdt: 100.0
+  quote_coin: USDT
+  status_filter: Trading

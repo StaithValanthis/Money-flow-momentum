@@ -40,6 +40,17 @@ class SymbolFeatures:
     trade_count_3m: int
     last_price: float
     vwap: float
+    # Stage 4 flow features
+    delta_acceleration: float = 0.0
+    cvd_divergence_score: float = 0.0
+    cvd_persistence_score: float = 0.0
+    trade_intensity_burst: float = 0.0
+    price_response_to_flow: float = 0.0
+    flow_exhaustion_score: float = 0.0
+    move_efficiency: float = 0.0
+    volatility_expansion_ratio: float = 1.0
+    breakout_confirmation_score: float = 0.0
+    failed_breakout_score: float = 0.0
 
 
 class FeatureBuilder:
@@ -91,6 +102,55 @@ class FeatureBuilder:
             rets = np.diff(np.array(closes[-self.config.volatility_window :])) / np.array(closes[-self.config.volatility_window : -1])
             vol = float(np.std(rets)) if len(rets) > 0 else 0
 
+        # Stage 4 flow features (robust to missing data)
+        delta_accel = 0.0
+        if state.delta_1m != 0 or state.delta_30s != 0:
+            d_short = state.delta_30s * 2 if state.delta_30s != 0 else state.delta_1m
+            delta_accel = state.delta_1m - d_short
+            if abs(d_short) > 1e-9:
+                delta_accel = delta_accel / abs(d_short)
+        cvd_div = 0.0
+        if cvd_slope != 0 and state.last_price > 0:
+            ret_sign = 1 if price_return_1m > 0 else (-1 if price_return_1m < 0 else 0)
+            cvd_sign = 1 if cvd_slope > 0 else (-1 if cvd_slope < 0 else 0)
+            if ret_sign != 0 and ret_sign != cvd_sign:
+                cvd_div = -0.5
+            elif ret_sign == cvd_sign and ret_sign != 0:
+                cvd_div = 0.3
+        cvd_pers = 0.0
+        if state.delta_3m != 0 and state.delta_1m != 0:
+            cvd_pers = min(1.0, abs(state.delta_1m) / (abs(state.delta_3m) / 3 + 1e-9))
+        intensity_burst = 0.0
+        if state.trade_count_3m > 0:
+            intensity_burst = (state.trade_count_1m * 3) / (state.trade_count_3m + 1) - 1.0
+        price_response = 0.0
+        if state.delta_1m != 0 and state.last_price > 0:
+            price_response = price_return_1m * (1 if state.delta_1m > 0 else -1)
+        exhaustion = 0.0
+        if abs(state.delta_1m) > 1e-9 and state.last_price > 0:
+            move_per_flow = abs(price_return_1m) / (abs(state.delta_1m) / (state.last_price * state.trade_count_1m) if state.trade_count_1m else 1e-9)
+            if move_per_flow < 0.5 and abs(price_return_1m) < 0.01:
+                exhaustion = 0.5
+        move_eff = 0.0
+        if abs(state.delta_1m) > 1e-9 and state.last_price > 0:
+            total_vol_1m = state.buy_vol_1m + state.sell_vol_1m
+            if total_vol_1m > 0:
+                move_eff = price_return_1m / (state.delta_1m / total_vol_1m + 1e-9)
+        vol_expansion = 1.0
+        if len(closes) >= self.config.volatility_window * 2:
+            recent = np.diff(np.array(closes[-self.config.volatility_window:])) / (np.array(closes[-self.config.volatility_window:-1]) + 1e-9)
+            older = np.diff(np.array(closes[-self.config.volatility_window*2:-self.config.volatility_window])) / (np.array(closes[-self.config.volatility_window*2:-self.config.volatility_window-1]) + 1e-9)
+            std_r = float(np.std(recent)) if len(recent) > 0 else 0
+            std_o = float(np.std(older)) if len(older) > 0 else 0
+            if std_o > 1e-12:
+                vol_expansion = std_r / std_o
+        breakout_conf = 0.0
+        if price_return_1m * cvd_slope > 0 and abs(price_return_1m) > 0.002:
+            breakout_conf = 0.3
+        failed_breakout = 0.0
+        if price_return_1m * cvd_slope < 0 and abs(price_return_1m) > 0.003:
+            failed_breakout = 0.5
+
         return SymbolFeatures(
             symbol=state.symbol,
             delta_30s=state.delta_30s,
@@ -116,6 +176,16 @@ class FeatureBuilder:
             trade_count_3m=state.trade_count_3m,
             last_price=state.last_price,
             vwap=vwap,
+            delta_acceleration=delta_accel,
+            cvd_divergence_score=cvd_div,
+            cvd_persistence_score=cvd_pers,
+            trade_intensity_burst=intensity_burst,
+            price_response_to_flow=price_response,
+            flow_exhaustion_score=exhaustion,
+            move_efficiency=move_eff,
+            volatility_expansion_ratio=vol_expansion,
+            breakout_confirmation_score=breakout_conf,
+            failed_breakout_score=failed_breakout,
         )
 
     def _compute_atr(self, state: SymbolState) -> float:

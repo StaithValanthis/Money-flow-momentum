@@ -30,6 +30,53 @@ class Executor:
             return f"{prefix}_{int(time.time()*1000)}_{uuid.uuid4().hex[:8]}"
         return ""
 
+    def place_reduce_only_tp(
+        self,
+        symbol: str,
+        side: str,
+        qty: float,
+        price: float,
+        label: str,
+    ) -> Optional[dict]:
+        """
+        Place a reduce-only TP order.
+
+        side: close side (Sell for longs, Buy for shorts)
+        label: e.g. "tp1" or "tp2" (used in orderLinkId prefix)
+        """
+        if qty <= 0:
+            log.error(f"TP {label} qty <= 0 for {symbol}, skipping")
+            return None
+
+        order_link_id = self._order_link_id(f"{label}_{symbol}")
+
+        try:
+            result = self.client.place_order(
+                category="linear",
+                symbol=symbol,
+                side=side,
+                order_type="Limit",
+                qty=str(round(qty, 8)),
+                price=str(price),
+                reduce_only=True,
+                order_link_id=order_link_id,
+            )
+            if result.get("retCode") == 0:
+                order = result.get("result", {}) or {}
+                log.info(
+                    f"TP {label} placed: {symbol} {side} qty={qty} "
+                    f"price={price} orderId={order.get('orderId')}"
+                )
+                return order
+            log.error(
+                f"TP {label} failed for {symbol}: {result.get('retMsg')} "
+                f"(code={result.get('retCode')})"
+            )
+            return None
+        except Exception as e:
+            log.error(f"TP {label} error for {symbol}: {e}")
+            return None
+
     def place_entry(
         self,
         symbol: str,

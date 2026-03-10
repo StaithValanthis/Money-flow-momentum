@@ -158,6 +158,15 @@ class BybitClient:
             return self.http.get_orderbook(category=category, symbol=symbol, limit=limit)
         return self._retry_rest(_call)
 
+    def get_long_short_ratio(self, category: str = "linear", symbol: Optional[str] = None) -> dict:
+        """Fetch long/short ratio (linear only)."""
+        def _call():
+            params: dict = {"category": category}
+            if symbol:
+                params["symbol"] = symbol
+            return self.http.get_long_short_ratio(**params)
+        return self._retry_rest(_call)
+
     # --- REST: Trading ---
 
     def set_leverage(self, category: str, symbol: str, buy_leverage: int, sell_leverage: int) -> dict:
@@ -314,8 +323,13 @@ class BybitClient:
             self._ws_public.ticker_stream(symbol=sym_arg, callback=_ticker_handler)
         return self._ws_public
 
-    def start_private_ws(self, on_order: Callable[[dict], None], on_position: Callable[[dict], None]) -> WebSocket:
-        """Start private WebSocket for orders and positions."""
+    def start_private_ws(
+        self,
+        on_order: Callable[[dict], None],
+        on_position: Callable[[dict], None],
+        on_execution: Optional[Callable[[dict], None]] = None,
+    ) -> WebSocket:
+        """Start private WebSocket for orders, positions, executions."""
         self._ws_private = WebSocket(
             testnet=self.testnet,
             channel_type="private",
@@ -323,23 +337,41 @@ class BybitClient:
             api_secret=self.api_secret,
         )
 
-        def _handler(msg: dict) -> None:
+        def _order_handler(msg: dict) -> None:
             try:
-                topic = msg.get("topic", "")
                 data = msg.get("data", [])
                 if not isinstance(data, list):
                     data = [data] if data else []
-                if "order" in topic:
-                    for o in data:
-                        on_order(o)
-                elif "position" in topic:
-                    for p in data:
-                        on_position(p)
+                for o in data:
+                    on_order(o)
             except Exception as e:
-                log.error(f"WS private handler error: {e}")
+                log.error(f"WS order handler error: {e}")
 
-        self._ws_private.order_stream(callback=_handler)
-        self._ws_private.position_stream(callback=_handler)
+        def _position_handler(msg: dict) -> None:
+            try:
+                data = msg.get("data", [])
+                if not isinstance(data, list):
+                    data = [data] if data else []
+                for p in data:
+                    on_position(p)
+            except Exception as e:
+                log.error(f"WS position handler error: {e}")
+
+        def _execution_handler(msg: dict) -> None:
+            try:
+                if on_execution:
+                    data = msg.get("data", [])
+                    if not isinstance(data, list):
+                        data = [data] if data else []
+                    for e in data:
+                        on_execution(e)
+            except Exception as e:
+                log.error(f"WS execution handler error: {e}")
+
+        self._ws_private.order_stream(callback=_order_handler)
+        self._ws_private.position_stream(callback=_position_handler)
+        if on_execution:
+            self._ws_private.execution_stream(callback=_execution_handler)
         return self._ws_private
 
     def stop_public_ws(self) -> None:
