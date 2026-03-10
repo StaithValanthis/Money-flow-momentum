@@ -1,5 +1,7 @@
-# Secrets
+# Secrets and env
 .env
+.env.*
+!.env.example
 *.pem
 
 # Python
@@ -12,9 +14,13 @@ venv/
 .venv/
 env/
 
-# Data
-data/*.db
-logs/*.log
+# Runtime data and logs (do not track)
+data/
+logs/
+artifacts/
+
+# Runtime config (track only example)
+config/config.yaml
 
 # IDE
 .idea/
