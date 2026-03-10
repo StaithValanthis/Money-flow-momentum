@@ -151,7 +151,7 @@ class TradingBot:
         self._recon.on_position_update(data)
 
     def _on_execution(self, data: dict) -> None:
-        """Handle private WS execution: update recon + lifecycle for TP fills; record entry fills for audit."""
+        """Handle private WS execution: update recon + lifecycle for TP fills; record entry fills for audit; always persist to trades."""
         self._recon.on_execution(data)
         closed_pnl = float(data.get("closedPnl", 0) or 0)
         if closed_pnl != 0:
@@ -160,39 +160,51 @@ class TradingBot:
         order_id = data.get("orderId", "")
         if not order_id:
             return
-        order_rec = self._recon.orders.get(order_id)
-        if not order_rec:
-            return
-
-        link = order_rec.order_link_id or ""
-        symbol = order_rec.symbol
-        side = order_rec.side
         qty = float(data.get("execQty", 0) or 0)
         ts = int(data.get("execTime", 0) or time.time() * 1000)
         price = float(data.get("execPrice", 0) or 0)
-
-        if qty <= 0 or not symbol:
+        if qty <= 0:
             return
 
-        if link.startswith("tp1_"):
-            self._handle_tp_execution(symbol, "tp1", qty, ts, side, data)
-        elif link.startswith("tp2_"):
-            self._handle_tp_execution(symbol, "tp2", qty, ts, side, data)
+        order_rec = self._recon.orders.get(order_id)
+        is_tp_fill = False
+        if order_rec:
+            link = order_rec.order_link_id or ""
+            symbol = order_rec.symbol
+            side = order_rec.side
+            if not symbol:
+                return
+            if link.startswith("tp1_"):
+                self._handle_tp_execution(symbol, "tp1", qty, ts, side, data)
+                is_tp_fill = True
+            elif link.startswith("tp2_"):
+                self._handle_tp_execution(symbol, "tp2", qty, ts, side, data)
+                is_tp_fill = True
+            else:
+                if self._db and link.startswith("entry"):
+                    audit_rows = self._db.get_execution_audit(order_id=order_id)
+                    intent_price = intent_qty = None
+                    if audit_rows:
+                        r = audit_rows[0]
+                        intent_price = r.get("intent_price")
+                        intent_qty = r.get("intent_qty")
+                    record_fill(self._db, order_id, qty, price, ts, intent_price=intent_price, intent_qty=intent_qty)
         else:
-            if self._db and link.startswith("entry"):
-                audit_rows = self._db.get_execution_audit(order_id=order_id)
-                intent_price = intent_qty = None
-                if audit_rows:
-                    r = audit_rows[0]
-                    intent_price = r.get("intent_price")
-                    intent_qty = r.get("intent_qty")
-                record_fill(self._db, order_id, qty, price, ts, intent_price=intent_price, intent_qty=intent_qty)
-            try:
-                exec_id = data.get("execId", "") or data.get("executionId", "")
-                self._db.insert_fill(ts, exec_id, order_id, symbol, side, qty, price, closed_pnl, config_id=getattr(self, "_config_id", None))
-                self._db.insert_trade(ts, symbol, side, qty, price, order_id=order_id, order_link_id=link, pnl=closed_pnl, config_id=getattr(self, "_config_id", None))
-            except Exception:
-                pass
+            symbol = data.get("symbol", "")
+            side = data.get("side", "")
+            if not symbol:
+                log.debug("Execution missing symbol and order not in recon; skip trade persist order_id=%s", order_id)
+                return
+            link = data.get("orderLinkId", "") or ""
+
+        if is_tp_fill or not self._db:
+            return
+        try:
+            exec_id = data.get("execId", "") or data.get("executionId", "")
+            self._db.insert_fill(ts, exec_id, order_id, symbol, side, qty, price, closed_pnl, config_id=getattr(self, "_config_id", None))
+            self._db.insert_trade(ts, symbol, side, qty, price, order_id=order_id, order_link_id=link, pnl=closed_pnl, config_id=getattr(self, "_config_id", None))
+        except Exception as e:
+            log.debug("insert_fill/insert_trade: %s", e)
 
     def _fetch_equity(self) -> float:
         try:

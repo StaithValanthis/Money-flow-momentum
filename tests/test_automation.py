@@ -5,6 +5,7 @@ from typing import Any
 from src.automation.orchestrator import get_automation_status, run_demo_automation_cycle
 from src.config.config import AutomationConfig, BurnInConfig, Config, EnvSettings
 from src.storage.db import Database
+from src.storage.reconciliation import ReconciliationStore
 from src.validation.readiness import READINESS_NOT_READY
 
 
@@ -352,4 +353,91 @@ def test_automation_progresses_past_waiting_when_trades_in_db(tmp_path: Path, mo
     # Real compute_readiness sees trade_count=10 from DB; automation progresses past WAITING_FOR_BURNIN_DATA
     assert snap["state"] != "WAITING_FOR_BURNIN_DATA"
     assert snap.get("last_evaluation_run_id") == "eval_ok"
+
+
+def test_on_execution_persists_trade_when_order_not_in_recon(tmp_path: Path) -> None:
+    """Execution callback writes to trades even when order is not yet in recon (e.g. execution before order update)."""
+    from src.main import TradingBot
+    from src.config.config import Config, EnvSettings
+
+    db_path = tmp_path / "bot.db"
+    cfg = Config()
+    cfg.database_path = str(db_path)
+    env = EnvSettings()
+    bot = TradingBot(cfg, env)
+    bot._db = Database(str(db_path))
+    bot._recon = ReconciliationStore()
+    bot._config_id = None
+
+    execution_payload = {
+        "orderId": "exec-order-123",
+        "orderLinkId": "entry_abc",
+        "symbol": "BTCUSDT",
+        "side": "Buy",
+        "execQty": "0.01",
+        "execPrice": "50000",
+        "execTime": str(int(__import__("time").time() * 1000)),
+        "execId": "exec-id-456",
+        "closedPnl": "0",
+    }
+    bot._on_execution(execution_payload)
+
+    db2 = Database(str(db_path))
+    trades = db2.get_trades()
+    db2.close()
+    assert len(trades) == 1
+    assert trades[0]["symbol"] == "BTCUSDT"
+    assert trades[0]["side"] == "Buy"
+    assert float(trades[0]["qty"]) == 0.01
+    assert trades[0]["order_id"] == "exec-order-123"
+
+
+def test_on_execution_persists_trade_when_entry_order_in_recon(tmp_path: Path) -> None:
+    """Execution callback writes to trades when order is in recon with entry link."""
+    from src.main import TradingBot
+    from src.config.config import Config, EnvSettings
+    from src.storage.reconciliation import OrderRecord
+
+    db_path = tmp_path / "bot.db"
+    cfg = Config()
+    cfg.database_path = str(db_path)
+    env = EnvSettings()
+    bot = TradingBot(cfg, env)
+    bot._db = Database(str(db_path))
+    bot._recon = ReconciliationStore()
+    bot._config_id = None
+
+    order_id = "order-789"
+    bot._recon.orders[order_id] = OrderRecord(
+        order_id=order_id,
+        order_link_id="entry_flow_123",
+        symbol="ETHUSDT",
+        side="Sell",
+        qty=0.02,
+        price=3000.0,
+        order_type="Market",
+        reduce_only=False,
+        status="Filled",
+        created_ts=0,
+        updated_ts=0,
+    )
+    execution_payload = {
+        "orderId": order_id,
+        "symbol": "ETHUSDT",
+        "side": "Sell",
+        "execQty": "0.02",
+        "execPrice": "2998.5",
+        "execTime": str(int(__import__("time").time() * 1000)),
+        "execId": "exec-xyz",
+        "closedPnl": "0",
+    }
+    bot._on_execution(execution_payload)
+
+    db2 = Database(str(db_path))
+    trades = db2.get_trades()
+    db2.close()
+    assert len(trades) == 1
+    assert trades[0]["symbol"] == "ETHUSDT"
+    assert trades[0]["side"] == "Sell"
+    assert float(trades[0]["qty"]) == 0.02
 
