@@ -24,7 +24,7 @@ A candidate is **eligible** only if (configurable in `PromotionRules`):
 
 ## Rollback
 
-- **One-command rollback**: `python3 run_bot.py rollback`
+- **One-command rollback**: `python3 run_bot.py rollback` or `python3 run_bot.py config rollback`
 - Uses the **last promotion event** to determine the previous active config.
 - Sets current active to `rolled_back`, previous to `active`.
 - Persists a row in `rollback_events` with reason and timestamps.
@@ -42,7 +42,7 @@ A candidate is **eligible** only if (configurable in `PromotionRules`):
 python3 run_bot.py promote --config-id <config_id>
 
 # Show current active config
-python3 run_bot.py promote --status
+python3 run_bot.py promote status
 
 # Rollback to previous active
 python3 run_bot.py rollback --reason "manual rollback"

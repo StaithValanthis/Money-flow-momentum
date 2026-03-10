@@ -16,6 +16,8 @@ python run_bot.py validate
 # or: ./scripts/validate_env.sh
 ```
 
+**Canonical install/run:** See **docs/INSTALL_AND_RUN_GUIDE.md** for the full Ubuntu install and run workflow.
+
 Exits 0 if config, credentials for **selected environment** (demo/live/testnet via BYBIT_ENV), dirs, mode/env consistency, and active strategy are OK. With dual-key, validation ensures the selected environment has a key pair (demo or live); mismatches (e.g. BYBIT_ENV=demo but only live keys set) fail clearly. When validation passes, the CLI prints readiness hints for demo burn-in vs guarded small-live. See **docs/BURN_IN_OPERATOR_RUNBOOK.md** for the full install → validate → burn-in → live → evaluate → optimize → shadow → promote/rollback workflow and script reference.
 
 ## CLI Commands (Ubuntu / Linux)

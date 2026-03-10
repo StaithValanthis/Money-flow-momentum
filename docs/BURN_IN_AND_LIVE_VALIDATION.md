@@ -2,6 +2,8 @@
 
 This document describes **burn-in mode** and how to use it for **Bybit Demo Trading** (recommended) and small-cap live validation.
 
+**Canonical install/run:** See **docs/INSTALL_AND_RUN_GUIDE.md** for the exact Ubuntu install and run sequence.
+
 ## Credentials: dual-key (recommended)
 
 Use **separate key pairs** for demo and live so you never overwrite one with the other:

@@ -63,16 +63,16 @@ fi
 # .env
 if [ ! -f ".env" ]; then
     echo ""
-    echo "WARN: .env not found. For paper/live you need BYBIT_API_KEY and BYBIT_API_SECRET."
+    echo "WARN: .env not found. For paper/live you need API keys."
     echo "  Run: python bootstrap_config.py"
-    echo "  Or create .env manually with BYBIT_API_KEY, BYBIT_API_SECRET, BYBIT_TESTNET."
+    echo "  Or create .env from .env.example (BYBIT_ENV=demo, BYBIT_DEMO_API_KEY/SECRET, BYBIT_LIVE_API_KEY/SECRET)."
 fi
 
 echo "--- Next steps ---"
-echo "1. Edit config/config.yaml and set mode, burn_in, risk limits."
-echo "2. If using paper/live: python bootstrap_config.py (or create .env)."
+echo "1. Edit config/config.yaml: set mode, burn_in.burn_in_enabled=true, burn_in.burn_in_phase=demo."
+echo "2. If using paper/live: python bootstrap_config.py (or create .env from .env.example)."
 echo "3. Validate: source venv/bin/activate && python run_bot.py validate"
-echo "4. If validation passes: ready for testnet burn-in (see docs/BURN_IN_OPERATOR_RUNBOOK.md) or guarded small-live after phase switch."
-echo "5. Run: source venv/bin/activate && python run_bot.py run"
+echo "4. Show runtime mode: python run_bot.py show-runtime-mode"
+echo "5. Start demo burn-in: ./scripts/start_testnet_burnin.sh (see docs/INSTALL_AND_RUN_GUIDE.md)"
 echo "6. Optional systemd: ./scripts/install_systemd.sh"
 echo "Install complete."

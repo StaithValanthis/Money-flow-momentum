@@ -168,7 +168,7 @@ def test_commands_help_no_crash():
     import subprocess
     import sys
     root = Path(__file__).resolve().parent.parent
-    for cmd in [["config", "--help"], ["evaluate", "--help"], ["optimize", "--help"], ["shadow", "--help"], ["promote", "--help"]]:
+    for cmd in [["config", "--help"], ["evaluate", "--help"], ["optimize", "--help"], ["shadow", "--help"], ["promote", "--help"], ["promote-env", "--help"]]:
         r = subprocess.run(
             [sys.executable, "run_bot.py"] + cmd,
             capture_output=True,

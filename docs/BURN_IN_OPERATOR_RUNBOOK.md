@@ -2,6 +2,8 @@
 
 Step-by-step operator workflow for Ubuntu CLI: install, validate, **demo burn-in** (Bybit Demo Trading), small-live readiness, guarded live start, and incident stop/rollback.
 
+**Canonical reference:** For a single consolidated install and run sequence, see **[docs/INSTALL_AND_RUN_GUIDE.md](INSTALL_AND_RUN_GUIDE.md)**.
+
 ## Prerequisites
 
 - Ubuntu 20.04+ (or similar Linux), headless CLI

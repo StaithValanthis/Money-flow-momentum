@@ -18,6 +18,8 @@ Production-ready Bybit V5 cross-sectional flow impulse trading bot for linear US
 - **Stage 5 (platform & portfolio)**: Portfolio risk budgeting, **candidate-set allocator** (allocates across multiple candidates, prefers stronger scores when budgets are tight), exposure controls, strategy registry, replay/fill model, **heartbeat written by runtime loops** (context refresh, WS, reconciliation, lifecycle, score/entry, degradation monitor), health/status/report CLI with real loop freshness (see [docs/STAGE5_PLATFORM_AND_PORTFOLIO.md](docs/STAGE5_PLATFORM_AND_PORTFOLIO.md), [docs/MONITORING_AND_ALERTING.md](docs/MONITORING_AND_ALERTING.md), [docs/DEPLOYMENT_AND_HEALTHCHECKS.md](docs/DEPLOYMENT_AND_HEALTHCHECKS.md))
 - **Burn-in / live validation**: Optional **burn-in mode** with stricter limits, execution audit, protection-state audit, gate breaches, and readiness reporting for **Bybit Demo** (recommended) and small-cap live rollout (see [docs/BURN_IN_AND_LIVE_VALIDATION.md](docs/BURN_IN_AND_LIVE_VALIDATION.md))
 
+**Canonical install and run workflow (Ubuntu):** See **[docs/INSTALL_AND_RUN_GUIDE.md](docs/INSTALL_AND_RUN_GUIDE.md)** for the exact installation steps and recommended run sequence (demo burn-in → promote-env → guarded live → evaluate/optimize/shadow/promote/rollback → incident stop).
+
 ## Demo / burn-in (Ubuntu CLI)
 
 **Bybit Demo Trading** is the recommended burn-in path: create demo API keys from your mainnet account (Demo Trading). Set `BYBIT_ENV=demo`, `BYBIT_DEMO_API_KEY`, `BYBIT_DEMO_API_SECRET` in `.env`. Do not use testnet for demo.
@@ -90,7 +92,7 @@ See `config/config.yaml.example` for all options. Key additions:
 - **Operator workflow (burn-in):** `scripts/validate_env.sh`, `scripts/start_testnet_burnin.sh` (demo burn-in), `scripts/check_burnin.sh`, `scripts/check_small_live_ready.sh`, **`scripts/promote_demo_to_live.sh`** (promote-env), `scripts/start_small_live.sh`, `scripts/incident_stop.sh`, `scripts/generate_burnin_bundle.sh`, `scripts/show_runtime_mode.sh`, `scripts/backup_config.sh`, `scripts/operator_menu.sh`
 - **Systemd:** `scripts/install_systemd.sh`, `scripts/service_status.sh`, `scripts/tail_logs.sh`
 
-See **docs/BURN_IN_OPERATOR_RUNBOOK.md** for full install → validate → burn-in → guarded live → evaluate → optimize → shadow → promote/rollback workflow.
+See **docs/INSTALL_AND_RUN_GUIDE.md** for the canonical install and run workflow. See **docs/BURN_IN_OPERATOR_RUNBOOK.md** for the full operator runbook (burn-in, promote-env, guarded live, evaluate, optimize, shadow, promote/rollback).
 
 ## Systemd
 
