@@ -53,7 +53,7 @@ burn_in:
 ## Running burn-in on demo (recommended)
 
 1. Set **demo** keys in `.env`: `BYBIT_ENV=demo`, `BYBIT_DEMO_API_KEY`, `BYBIT_DEMO_API_SECRET` (create from mainnet account → Demo Trading; do not use testnet for demo).
-2. Set `mode: paper` or `dry_run: true` if you want no real orders at first.
+2. Set `mode: paper` and `dry_run: false` to place **real Demo orders** (bootstrap does this when you choose demo). Set `dry_run: true` only if you want simulated entries with no orders.
 3. Enable burn-in and set phase to `demo`:
 
    ```yaml

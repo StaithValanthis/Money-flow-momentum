@@ -46,7 +46,7 @@ python bootstrap_config.py
 
 - Prompts for **demo** API keys (Bybit Demo Trading; create from mainnet account → Demo Trading), optionally **live** keys.
 - Writes `.env` with `BYBIT_ENV`, `BYBIT_DEMO_API_KEY/SECRET`, `BYBIT_LIVE_API_KEY/SECRET`.
-- Creates or updates `config/config.yaml`. If you choose **demo**, the generated config has `mode: paper`, `burn_in.burn_in_enabled: true`, and `burn_in.burn_in_phase: demo`, so you can run demo burn-in without editing YAML.
+- Creates or updates `config/config.yaml`. If you choose **demo**, the generated config has `mode: paper`, `dry_run: false`, `burn_in.burn_in_enabled: true`, and `burn_in.burn_in_phase: demo`, so **real Demo orders** are placed (no manual YAML edit needed for default demo path).
 
 Or create `.env` manually from `.env.example` (set `BYBIT_ENV=demo`, demo and optionally live keys).
 
@@ -86,7 +86,7 @@ python run_bot.py show-runtime-mode
 
 Or: `./scripts/show_runtime_mode.sh`
 
-Confirm `selected_environment: DEMO`, `burn_in_phase: demo`, and `selected_key_pair: present`.
+Confirm `selected_environment: DEMO`, `burn_in_phase: demo`, `dry_run: false` (for real Demo orders), and `selected_key_pair: present`.
 
 ### 1.7 Optional: install systemd service
 

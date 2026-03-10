@@ -278,6 +278,7 @@ class Config(BaseModel):
 
     mode: str = Field(default="paper", pattern="^(dry_run|paper|live)$")
     dry_run: bool = False
+    # demo_mode: deprecated for execution; do not set from mode=paper. Use dry_run to control simulated vs real orders.
     demo_mode: bool = False
     exchange: ExchangeConfig = Field(default_factory=ExchangeConfig)
     universe: UniverseConfig = Field(default_factory=UniverseConfig)
@@ -339,6 +340,6 @@ def load_config(config_path: Optional[Path] = None) -> tuple[Config, EnvSettings
     config = Config.model_validate(data)
     if config.mode == "dry_run":
         config.dry_run = True
-    if config.mode == "paper":
-        config.demo_mode = True
+    # Do NOT set demo_mode from mode=paper. dry_run is the single control for "simulate entries only".
+    # mode=paper with dry_run=False => real orders on selected env (Demo/Live); mode=dry_run => simulate only.
     return config, env

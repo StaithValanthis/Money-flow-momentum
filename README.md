@@ -30,13 +30,13 @@ chmod +x install.sh
 ./install.sh
 source venv/bin/activate
 python3 bootstrap_config.py   # prompts for demo keys, optionally live keys
-# Edit config/config.yaml: mode: paper, burn_in_enabled: true, burn_in_phase: demo
+# Edit config/config.yaml: mode: paper, dry_run: false (for real Demo orders), burn_in_enabled: true, burn_in_phase: demo
 python3 run_bot.py validate
 python3 run_bot.py show-runtime-mode
 ./scripts/start_testnet_burnin.sh   # starts demo burn-in (or run_bot.py run)
 ```
 
-To run fully dry (no exchange orders, only signal/decision logging): set `mode: dry_run` in config.
+To run fully simulated (no exchange orders, only signal/decision logging): set `mode: dry_run` or `dry_run: true` in config. For **real Demo orders** (recommended burn-in), use `mode: paper`, `dry_run: false` (bootstrap default when you choose demo), and `BYBIT_ENV=demo`.
 
 ### 2. Bootstrap config (optional, if not done in install)
 
@@ -79,7 +79,7 @@ scripts/
 - `.env` – API keys (never commit). **Dual-key (recommended):** `BYBIT_ENV=demo|live`, `BYBIT_DEMO_API_KEY`, `BYBIT_DEMO_API_SECRET`, `BYBIT_LIVE_API_KEY`, `BYBIT_LIVE_API_SECRET`. Legacy: `BYBIT_API_KEY`, `BYBIT_API_SECRET` or `BYBIT_ENV=testnet` with testnet keys.
 
 See `config/config.yaml.example` for all options. Key additions:
-- **dry_run / demo_mode**: Same decision path, no live orders when true
+- **dry_run**: When true, no orders are placed (simulated entries only). When false, real orders are placed on the selected environment (Demo or Live). Bootstrap sets `dry_run: false` for real Demo burn-in.
 - **Context refresh**: `kline_refresh_seconds`, `oi_refresh_seconds`, `funding_refresh_seconds`, `context_staleness_seconds`
 - **Safety**: `max_daily_realized_loss_usdt`, `max_trades_per_hour`, `api_error_threshold`, `reentry_cooldown_seconds`
 - **Recovery**: `recover_orphan_positions`, `emergency_flatten_on_startup`, `rest_reconciliation_interval_seconds`

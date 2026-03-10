@@ -2,6 +2,7 @@
 # Copy to config.yaml and customize
 
 mode: paper  # dry_run | paper | live
+dry_run: false  # true = simulated entries only (no orders); false = place real orders on selected env (Demo/Live)
 
 exchange:
   testnet: true

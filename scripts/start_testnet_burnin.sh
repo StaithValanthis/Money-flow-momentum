@@ -55,7 +55,10 @@ if not key or not secret:
     exit(1)
 if legacy:
     print('WARN: Using legacy single-key mode. Recommend dual-key: BYBIT_DEMO_API_KEY/SECRET and BYBIT_LIVE_API_KEY/SECRET')
-print('OK: burn_in_enabled=true, burn_in_phase=%s, environment=%s, keys present' % (phase, env_type.upper()))
+dry_run = getattr(c, 'dry_run', False)
+if dry_run:
+    print('WARN: dry_run is true — bot will simulate only (no real Demo orders). Set dry_run: false in config for real Demo burn-in.')
+print('OK: burn_in_enabled=true, burn_in_phase=%s, environment=%s, keys present, real_orders=%s' % (phase, env_type.upper(), 'no' if dry_run else 'yes'))
 " 2>/dev/null; then
     echo "Fix config and .env then re-run."
     exit 1

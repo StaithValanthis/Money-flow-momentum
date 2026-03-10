@@ -357,6 +357,7 @@ def register_stage3_cli(app: typer.Typer) -> None:
         dual_live = _has_dual_key_live(env)
         typer.echo(f"dual_key_configured: demo={dual_demo} live={dual_live}")
         typer.echo(f"mode: {config.mode}")
+        typer.echo(f"dry_run: {config.dry_run}")
         typer.echo(f"exchange.testnet: {config.exchange.testnet}")
         typer.echo(f"BYBIT_ENV: {getattr(env, 'bybit_env', '') or 'N/A'}")
         burn_in = getattr(config, "burn_in", None)
@@ -375,6 +376,10 @@ def register_stage3_cli(app: typer.Typer) -> None:
             typer.echo("WARN: mode is live but burn_in_phase is demo/testnet. Set burn_in_phase to live_small for guarded live.")
         if burn_in and getattr(burn_in, "burn_in_enabled", False) is False:
             typer.echo("WARN: burn_in_enabled is false during validation phase.")
+        if config.dry_run:
+            typer.echo("execution: simulated only (dry_run=true; no orders will be placed)")
+        else:
+            typer.echo("execution: real orders will be placed on {}".format(selected_env))
 
     @app.command("promote-env")
     def promote_env(

@@ -36,7 +36,7 @@ Install script will:
 
 - **API keys (paper/live):**  
   `python bootstrap_config.py`  
-  Prompts for **demo** keys (Bybit Demo Trading; create from mainnet account → Demo Trading), optionally **live** keys (dual-key). Writes `BYBIT_ENV=demo|live`, `BYBIT_DEMO_API_KEY/SECRET`, `BYBIT_LIVE_API_KEY/SECRET`. When you choose **demo**, it also writes `config/config.yaml` with `mode: paper`, `burn_in.burn_in_enabled: true`, and `burn_in.burn_in_phase: demo`, so no manual config edit is needed for the default demo path. Or create `.env` manually (see `.env.example`). Dual-key is recommended; legacy `BYBIT_API_KEY`/`BYBIT_API_SECRET` is supported as fallback. **Do not** use Demo Trading on Testnet; use official Bybit Demo (api-demo.bybit.com, stream-demo.bybit.com for private; public data from mainnet stream.bybit.com).
+  Prompts for **demo** keys (Bybit Demo Trading; create from mainnet account → Demo Trading), optionally **live** keys (dual-key). Writes `BYBIT_ENV=demo|live`, `BYBIT_DEMO_API_KEY/SECRET`, `BYBIT_LIVE_API_KEY/SECRET`. When you choose **demo**, it also writes `config/config.yaml` with `mode: paper`, `dry_run: false`, `burn_in.burn_in_enabled: true`, and `burn_in.burn_in_phase: demo`, so real Demo orders are placed and no manual config edit is needed for the default demo path. Or create `.env` manually (see `.env.example`). Dual-key is recommended; legacy `BYBIT_API_KEY`/`BYBIT_API_SECRET` is supported as fallback. **Do not** use Demo Trading on Testnet; use official Bybit Demo (api-demo.bybit.com, stream-demo.bybit.com for private; public data from mainnet stream.bybit.com).
 
 - **Config (only if you did not bootstrap with demo or want to change limits):**  
   Edit `config/config.yaml`: set `mode` (e.g. `paper` for demo), and optionally enable burn-in:
@@ -87,7 +87,7 @@ sudo systemctl start money-flow-momentum
 
 ## 5. Demo burn-in start (recommended)
 
-1. Set in config: `burn_in_enabled: true`, `burn_in_phase: demo`, and **demo** keys in `.env`: `BYBIT_ENV=demo`, `BYBIT_DEMO_API_KEY`, `BYBIT_DEMO_API_SECRET` (create from mainnet account → Demo Trading; do not use testnet for demo).
+1. Set in config: `burn_in_enabled: true`, `burn_in_phase: demo`, `dry_run: false` (for real Demo orders; bootstrap sets this when you choose demo), and **demo** keys in `.env`: `BYBIT_ENV=demo`, `BYBIT_DEMO_API_KEY`, `BYBIT_DEMO_API_SECRET` (create from mainnet account → Demo Trading; do not use testnet for demo).
 2. Run:
 
 ```bash

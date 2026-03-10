@@ -118,6 +118,8 @@ def validate_environment(
 
     burn_in = getattr(config, "burn_in", None)
     if burn_in and getattr(burn_in, "burn_in_enabled", False):
+        if getattr(config, "dry_run", False) is True and getattr(burn_in, "burn_in_phase", "") == "demo":
+            warnings.append("dry_run is true: Demo burn-in will simulate only (no real orders). Set dry_run: false in config to place real Demo orders.")
         phase = getattr(burn_in, "burn_in_phase", "demo")
         if config.mode == "live" and phase in ("demo", "testnet"):
             warnings.append("Burn-in phase is '%s' but mode is 'live'. Set burn_in_phase to live_small for guarded live." % phase)

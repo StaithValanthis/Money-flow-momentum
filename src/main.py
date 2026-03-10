@@ -231,7 +231,7 @@ class TradingBot:
         if lc.tp1_order_id or lc.tp2_order_id:
             return
 
-        if self.config.dry_run or self.config.demo_mode:
+        if self.config.dry_run:
             now_ms = int(time.time() * 1000)
             self._db.insert_lifecycle_event(
                 now_ms, symbol, "tp_plan_dry_run", lc.phase.value, config_id=self._config_id
@@ -862,14 +862,14 @@ class TradingBot:
                                 self._db.insert_entry_decision(now_ms, cand.symbol, "long" if cand.side == "Buy" else "short", f"rejected:{rej}", cand.score, self.config.dry_run, config_id=self._config_id)
                                 continue
                             final_qty = dec.qty
-                            if self.config.dry_run or self.config.demo_mode:
+                            if self.config.dry_run:
                                 reason = "DRY_RUN_ACCEPTED"
                                 if dec.allocation_reason:
                                     reason += f":{dec.allocation_reason}"
                                 if dec.resized:
                                     reason += ":resized"
                                 self._db.insert_entry_decision(now_ms, cand.symbol, "long" if cand.side == "Buy" else "short", reason, cand.score, True, config_id=self._config_id)
-                                log.info(f"DRY_RUN entry: {cand.symbol} {cand.side} qty={final_qty}" + (f" ({dec.allocation_reason})" if dec.allocation_reason else ""))
+                                log.info("Simulated entry (dry_run): {} {} qty={}", cand.symbol, cand.side, final_qty)
                                 continue
                             try:
                                 result = self._executor.place_entry(cand.symbol, cand.side, final_qty, None, cand.stop_price, None)
@@ -957,9 +957,9 @@ class TradingBot:
                                 final_qty = alloc.qty
                                 if qty_step > 0:
                                     final_qty = max(min_qty, round(final_qty / qty_step) * qty_step)
-                            if self.config.dry_run or self.config.demo_mode:
+                            if self.config.dry_run:
                                 self._db.insert_entry_decision(now_ms, sig.symbol, sig.direction, "DRY_RUN_ACCEPTED", sig.score, True, config_id=self._config_id)
-                                log.info(f"DRY_RUN entry: {sig.symbol} {side} qty={final_qty}")
+                                log.info("Simulated entry (dry_run): {} {} qty={}", sig.symbol, side, final_qty)
                                 continue
                             try:
                                 result = self._executor.place_entry(sig.symbol, side, final_qty, None, stop, None)
@@ -1090,6 +1090,10 @@ def run(
         retention=config.logging.retention,
     )
     logger.info("Starting bot mode={} dry_run={} env={}", config.mode, config.dry_run, get_bybit_env(env))
+    if config.dry_run:
+        logger.info("Execution: simulated only (no orders will be placed)")
+    else:
+        logger.info("Execution: real orders will be placed on {}", get_bybit_env(env).upper())
     bot = TradingBot(config, env)
 
     def shutdown(sig, frame):
