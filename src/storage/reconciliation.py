@@ -134,7 +134,7 @@ class ReconciliationStore:
                     qty=float(data.get("execQty", 0) or 0),
                     price=float(data.get("execPrice", 0) or 0),
                     exec_ts=ts,
-                    closed_pnl=float(data.get("closedPnl", 0) or 0),
+                    closed_pnl=float(data.get("execPnl") or data.get("closedPnl") or 0),
                 )
             )
             # Keep last 1000 fills

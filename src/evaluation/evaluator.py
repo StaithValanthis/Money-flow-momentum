@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 from src.storage.db import Database
+from src.evaluation.datasets import compute_realized_pnl_by_pairing
 from src.evaluation.metrics import (
     compute_core_metrics,
     compute_stratified_metrics,
@@ -54,6 +55,31 @@ class Evaluator:
         execution_audit = self.db.get_execution_audit(since_ts=from_ts, to_ts=to_ts, config_id=config_id) if hasattr(self.db, "get_execution_audit") else []
 
         core = compute_core_metrics(trades, equity_curve, initial_equity)
+        # If trades have no PnL (e.g. DB written before execPnl fix), derive from fills
+        if core.get("total_pnl", 0) == 0 and fills:
+            fill_pnls = [float(f.get("closed_pnl") or 0) for f in fills]
+            total_from_fills = sum(fill_pnls)
+            if total_from_fills != 0:
+                wins_f = [p for p in fill_pnls if p > 0]
+                losses_f = [p for p in fill_pnls if p < 0]
+                n_f = len(wins_f) + len(losses_f)
+                core = {
+                    **core,
+                    "total_pnl": total_from_fills,
+                    "realized_pnl": total_from_fills,
+                    "return_pct": (total_from_fills / initial_equity) * 100.0 if initial_equity else 0.0,
+                    "win_rate": len(wins_f) / n_f if n_f else 0.0,
+                    "expectancy": total_from_fills / n_f if n_f else 0.0,
+                    "avg_win": (sum(wins_f) / len(wins_f)) if wins_f else 0.0,
+                    "avg_loss": (sum(losses_f) / len(losses_f)) if losses_f else 0.0,
+                }
+        # If still no PnL, compute from entry/exit pairing (tp1/tp2 vs entry rows)
+        if core.get("total_pnl", 0) == 0 and trades:
+            trades_with_pnl = compute_realized_pnl_by_pairing(trades)
+            core_pair = compute_core_metrics(trades_with_pnl, equity_curve, initial_equity)
+            if core_pair.get("total_pnl", 0) != 0:
+                core = core_pair
+                trades = trades_with_pnl
         by_symbol = compute_stratified_metrics(trades, by="symbol")
         by_side = compute_stratified_metrics(trades, by="side")
         by_config = compute_stratified_metrics(trades, by="config_id") if any(t.get("config_id") for t in trades) else {}

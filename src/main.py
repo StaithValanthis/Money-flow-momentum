@@ -153,9 +153,10 @@ class TradingBot:
     def _on_execution(self, data: dict) -> None:
         """Handle private WS execution: update recon + lifecycle for TP fills; record entry fills for audit; always persist to trades."""
         self._recon.on_execution(data)
-        closed_pnl = float(data.get("closedPnl", 0) or 0)
-        if closed_pnl != 0:
-            self._risk.record_realized_pnl(closed_pnl)
+        # Bybit V5 linear uses execPnl for realized PnL per close; fallback to closedPnl for other/legacy
+        realised_pnl = float(data.get("execPnl") or data.get("closedPnl") or 0)
+        if realised_pnl != 0 and self._risk:
+            self._risk.record_realized_pnl(realised_pnl)
 
         order_id = data.get("orderId", "")
         if not order_id:
@@ -201,8 +202,8 @@ class TradingBot:
             return
         try:
             exec_id = data.get("execId", "") or data.get("executionId", "")
-            self._db.insert_fill(ts, exec_id, order_id, symbol, side, qty, price, closed_pnl, config_id=getattr(self, "_config_id", None))
-            self._db.insert_trade(ts, symbol, side, qty, price, order_id=order_id, order_link_id=link, pnl=closed_pnl, config_id=getattr(self, "_config_id", None))
+            self._db.insert_fill(ts, exec_id, order_id, symbol, side, qty, price, realised_pnl, config_id=getattr(self, "_config_id", None))
+            self._db.insert_trade(ts, symbol, side, qty, price, order_id=order_id, order_link_id=link, pnl=realised_pnl, config_id=getattr(self, "_config_id", None))
         except Exception as e:
             log.debug("insert_fill/insert_trade: %s", e)
 
@@ -434,10 +435,10 @@ class TradingBot:
                 order_id = data.get("orderId", "") or ""
                 exec_id = data.get("execId", "") or data.get("executionId", "") or ""
                 exec_price = float(data.get("execPrice", 0) or 0)
-                closed_pnl = float(data.get("closedPnl", 0) or 0)
+                realised_pnl = float(data.get("execPnl") or data.get("closedPnl") or 0)
                 if order_id and exec_id:
-                    self._db.insert_fill(ts, exec_id, order_id, symbol, side, fill_qty, exec_price, closed_pnl, config_id=getattr(self, "_config_id", None))
-                self._db.insert_trade(ts, symbol, side, fill_qty, exec_price, order_id=order_id, order_link_id="", pnl=closed_pnl, config_id=getattr(self, "_config_id", None))
+                    self._db.insert_fill(ts, exec_id, order_id, symbol, side, fill_qty, exec_price, realised_pnl, config_id=getattr(self, "_config_id", None))
+                self._db.insert_trade(ts, symbol, side, fill_qty, exec_price, order_id=order_id, order_link_id="", pnl=realised_pnl, config_id=getattr(self, "_config_id", None))
             except Exception as e:
                 log.debug(f"TP fill insert_fill/insert_trade: {e}")
 

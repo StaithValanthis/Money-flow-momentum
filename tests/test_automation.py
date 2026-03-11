@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
 from src.automation.orchestrator import get_automation_status, run_demo_automation_cycle
 from src.config.config import AutomationConfig, BurnInConfig, Config, EnvSettings
 from src.storage.db import Database
@@ -577,4 +578,118 @@ def test_on_execution_persists_trade_when_entry_order_in_recon(tmp_path: Path) -
     assert trades[0]["symbol"] == "ETHUSDT"
     assert trades[0]["side"] == "Sell"
     assert float(trades[0]["qty"]) == 0.02
+
+
+def test_on_execution_stores_realized_pnl_from_execPnl(tmp_path: Path) -> None:
+    """Bybit V5 sends realized PnL in execPnl; trade and fill must store it (not only closedPnl)."""
+    from src.main import TradingBot
+    from src.config.config import Config, EnvSettings
+    from src.storage.db import Database
+
+    db_path = tmp_path / "bot.db"
+    cfg = Config()
+    cfg.database_path = str(db_path)
+    env = EnvSettings()
+    bot = TradingBot(cfg, env)
+    bot._db = Database(str(db_path))
+    bot._recon = ReconciliationStore()
+    bot._config_id = None
+
+    execution_payload = {
+        "orderId": "pnl-order-1",
+        "symbol": "BTCUSDT",
+        "side": "Sell",
+        "execQty": "0.1",
+        "execPrice": "96500",
+        "execTime": str(int(__import__("time").time() * 1000)),
+        "execId": "exec-pnl-1",
+        "closedPnl": "0",
+        "execPnl": "12.50",
+    }
+    bot._on_execution(execution_payload)
+
+    db2 = Database(str(db_path))
+    trades = db2.get_trades()
+    fills = db2.get_fills()
+    db2.close()
+    assert len(trades) == 1
+    assert float(trades[0]["pnl"]) == 12.5
+    assert len(fills) == 1
+    assert float(fills[0]["closed_pnl"]) == 12.5
+
+
+def test_evaluator_fallback_from_fills_when_trades_pnl_zero(tmp_path: Path) -> None:
+    """When trades have pnl=0 (e.g. old DB), evaluator uses fills.closed_pnl for total_pnl."""
+    from src.storage.db import Database
+    from src.evaluation.evaluator import Evaluator
+
+    db_path = tmp_path / "bot.db"
+    db = Database(str(db_path))
+    ts = 1000000
+    db.insert_trade(ts, "BTCUSDT", "Sell", 0.01, 50000.0, order_id="o1", pnl=0.0)
+    db.insert_trade(ts + 1000, "ETHUSDT", "Buy", 0.1, 3000.0, order_id="o2", pnl=0.0)
+    db.insert_fill(ts, "e1", "o1", "BTCUSDT", "Sell", 0.01, 50000.0, closed_pnl=10.0)
+    db.insert_fill(ts + 1000, "e2", "o2", "ETHUSDT", "Buy", 0.1, 3000.0, closed_pnl=-3.0)
+    db.close()
+
+    ev = Evaluator(str(db_path))
+    summary = ev.run(from_ts=ts - 1, to_ts=ts + 2000, initial_equity=10_000.0)
+    core = summary["core"]
+    assert core["total_pnl"] == 7.0
+    assert core["return_pct"] == pytest.approx(0.07, rel=1e-2)
+    assert core["win_rate"] == 0.5
+    assert core["expectancy"] == 3.5
+
+
+def test_evaluator_pairing_long_entry_exit_nonzero_pnl(tmp_path: Path) -> None:
+    """Evaluator computes realized PnL from entry+exit pairing when trades/fills have no PnL."""
+    from src.storage.db import Database
+    from src.evaluation.evaluator import Evaluator
+
+    db_path = tmp_path / "bot.db"
+    db = Database(str(db_path))
+    ts = 1000000
+    db.insert_trade(ts, "BTCUSDT", "Buy", 0.01, 50_000.0, order_id="entry-o", order_link_id="entry_abc", pnl=0.0)
+    db.insert_trade(ts + 5000, "BTCUSDT", "Sell", 0.01, 51_000.0, order_id="tp-o", order_link_id="tp1_xyz", pnl=0.0)
+    db.close()
+
+    ev = Evaluator(str(db_path))
+    summary = ev.run(from_ts=ts - 1, to_ts=ts + 10_000, initial_equity=10_000.0)
+    assert summary["core"]["total_pnl"] == pytest.approx(10.0)
+    assert summary["core"]["return_pct"] == pytest.approx(0.1, rel=1e-2)
+
+
+def test_evaluator_pairing_short_entry_exit_nonzero_pnl(tmp_path: Path) -> None:
+    """Short entry + exit => evaluator reports correct realized PnL via pairing."""
+    from src.storage.db import Database
+    from src.evaluation.evaluator import Evaluator
+
+    db_path = tmp_path / "bot.db"
+    db = Database(str(db_path))
+    ts = 2000000
+    db.insert_trade(ts, "ETHUSDT", "Sell", 0.1, 3_000.0, order_id="entry-o", order_link_id="entry_def", pnl=0.0)
+    db.insert_trade(ts + 3000, "ETHUSDT", "Buy", 0.1, 2_900.0, order_id="tp-o", order_link_id="tp1_uvw", pnl=0.0)
+    db.close()
+
+    ev = Evaluator(str(db_path))
+    summary = ev.run(from_ts=ts - 1, to_ts=ts + 10_000, initial_equity=10_000.0)
+    assert summary["core"]["total_pnl"] == pytest.approx(10.0)
+
+
+def test_evaluator_pairing_partial_tp_nonzero_pnl(tmp_path: Path) -> None:
+    """Partial TP1 + TP2 exits => evaluator total_pnl from pairing."""
+    from src.storage.db import Database
+    from src.evaluation.evaluator import Evaluator
+
+    db_path = tmp_path / "bot.db"
+    db = Database(str(db_path))
+    ts = 3000000
+    db.insert_trade(ts, "BTCUSDT", "Buy", 0.03, 50_000.0, order_id="e1", order_link_id="entry_1", pnl=0.0)
+    db.insert_trade(ts + 1000, "BTCUSDT", "Sell", 0.01, 51_000.0, order_id="tp1", order_link_id="tp1_a", pnl=0.0)
+    db.insert_trade(ts + 2000, "BTCUSDT", "Sell", 0.02, 52_000.0, order_id="tp2", order_link_id="tp2_b", pnl=0.0)
+    db.close()
+
+    ev = Evaluator(str(db_path))
+    summary = ev.run(from_ts=ts - 1, to_ts=ts + 10_000, initial_equity=10_000.0)
+    assert summary["core"]["total_pnl"] == pytest.approx(50.0)  # 10 + 40
 
