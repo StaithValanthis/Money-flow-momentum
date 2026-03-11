@@ -493,6 +493,70 @@ def test_automation_progresses_past_waiting_when_trades_in_db(tmp_path: Path, mo
     assert snap.get("last_evaluation_run_id") == "eval_ok"
 
 
+def test_automation_continue_demo_no_candidate_when_eval_and_opt_ran(tmp_path: Path, monkeypatch) -> None:
+    """When evaluation and optimizer have run but no candidate met thresholds, state is CONTINUE_DEMO_NO_CANDIDATE."""
+    db_path = tmp_path / "bot.db"
+    db = Database(str(db_path))
+    now_ms = int(__import__("time").time() * 1000)
+    for i in range(10):
+        db.insert_trade(
+            ts=now_ms - 12 * 3600 * 1000 + i * 3600 * 1000,
+            symbol="BTCUSDT",
+            side="Buy",
+            qty=0.01,
+            price=50000.0,
+            order_id=f"oid_{i}",
+            pnl=0.0,
+            config_id=None,
+        )
+    db.close()
+
+    from src.automation.orchestrator import run_demo_automation_cycle
+    from src.automation.state import STATE_CONTINUE_DEMO_NO_CANDIDATE
+    from src.config.config import AutomationConfig, BurnInConfig, Config, EnvSettings
+
+    cfg = Config()
+    cfg.database_path = str(db_path)
+    cfg.automation = AutomationConfig(
+        enabled=True,
+        demo_orchestration_enabled=True,
+        min_trades_for_auto_evaluation=5,
+        min_hours_between_evaluations=0.5,
+        min_hours_between_optimizer_runs=1.0,
+    )
+    cfg.burn_in = BurnInConfig(burn_in_enabled=True, burn_in_phase="demo")
+    env = EnvSettings()
+    env.bybit_env = "demo"
+
+    def _fake_load_config(_path):
+        return cfg, env
+
+    class FakeEvaluator:
+        def __init__(self, db_path: str) -> None:
+            self.db_path = db_path
+
+        def run(self, from_ts=None, to_ts=None, config_id=None, symbol=None, **kwargs):
+            return {"run_id": "eval_no_cand", "trade_count": 10, "report_path": str(tmp_path / "eval.md")}
+
+    def _fake_run_optimization(*, db_path: str, config_id: str, from_ts: int, to_ts: int, n_samples: int, **kwargs):
+        return {"run_id": "opt_no_cand", "best_candidate_config_id": None}
+
+    monkeypatch.setattr("src.automation.orchestrator.load_config", _fake_load_config)
+    monkeypatch.setattr("src.automation.orchestrator.Evaluator", FakeEvaluator)
+    monkeypatch.setattr("src.automation.orchestrator.run_optimization", _fake_run_optimization)
+
+    out = run_demo_automation_cycle(config_path=Path("dummy.yaml"))
+    snap = out["snapshot"]
+    details = out["details"]
+    assert snap["state"] == STATE_CONTINUE_DEMO_NO_CANDIDATE
+    assert snap["last_evaluation_run_id"] == "eval_no_cand"
+    assert snap["last_optimizer_run_id"] == "opt_no_cand"
+    assert snap.get("best_candidate_config_id") is None
+    assert "recommendation_message" in details
+    assert "no candidate met thresholds" in details["recommendation_message"]
+    assert "Continue Demo" in details["recommendation_message"]
+
+
 def test_on_execution_persists_trade_when_order_not_in_recon(tmp_path: Path) -> None:
     """Execution callback writes to trades even when order is not yet in recon (e.g. execution before order update)."""
     from src.main import TradingBot

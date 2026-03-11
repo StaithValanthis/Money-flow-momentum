@@ -23,6 +23,7 @@ from src.automation.state import (
     STATE_BLOCKED_BY_HEALTH,
     STATE_BLOCKED_BY_KILL_SWITCH,
     STATE_CANDIDATE_AVAILABLE,
+    STATE_CONTINUE_DEMO_NO_CANDIDATE,
     STATE_EVALUATING,
     STATE_IDLE,
     STATE_OPTIMIZING,
@@ -111,6 +112,8 @@ def _write_recommendation_artifacts(config: Config, snap: AutomationSnapshot, de
             f.write(f"- blocked_reason: {snap.blocked_reason}\n")
         if details.get("blocked_hint"):
             f.write(f"- blocked_hint: {details['blocked_hint']}\n")
+        if details.get("recommendation_message"):
+            f.write(f"\n## Recommendation\n\n{details['recommendation_message']}\n\n")
         if snap.last_error:
             f.write(f"- last_error: {snap.last_error}\n")
         f.write("\n## Next manual commands\n\n")
@@ -365,6 +368,8 @@ def run_demo_automation_cycle(config_path: Optional[Path] = None) -> dict[str, A
             if snap.state not in (STATE_SHADOW_RUNNING, STATE_CANDIDATE_AVAILABLE):
                 if trade_count <= 0:
                     snap = transition(snap, STATE_WAITING_FOR_BURNIN_DATA)
+                elif snap.last_evaluation_run_id and snap.last_optimizer_run_id:
+                    snap = transition(snap, STATE_CONTINUE_DEMO_NO_CANDIDATE)
                 else:
                     snap = transition(snap, STATE_READY_FOR_EVALUATION)
 
@@ -372,6 +377,7 @@ def run_demo_automation_cycle(config_path: Optional[Path] = None) -> dict[str, A
 
         active_config_id = config_id
         next_commands: list[str] = []
+        recommendation_message: Optional[str] = None
         if snap.best_candidate_config_id:
             # Operator can inspect candidate, shadow, and then decide on promotion.
             best_cid = snap.best_candidate_config_id
@@ -385,6 +391,10 @@ def run_demo_automation_cycle(config_path: Optional[Path] = None) -> dict[str, A
             )
         else:
             next_commands.append("python run_bot.py burnin report --window %.1f" % window_hours)
+            if snap.state == STATE_CONTINUE_DEMO_NO_CANDIDATE:
+                recommendation_message = (
+                    "Evaluation and optimizer completed, but no candidate met thresholds yet. Continue Demo data collection."
+                )
 
         details = {
             "active_config_id": active_config_id,
@@ -394,6 +404,8 @@ def run_demo_automation_cycle(config_path: Optional[Path] = None) -> dict[str, A
             "candidate_count": None,
             "next_commands": next_commands,
         }
+        if recommendation_message is not None:
+            details["recommendation_message"] = recommendation_message
         _write_recommendation_artifacts(config, snap, details)
         return {"snapshot": asdict(snap), "details": details}
     finally:
