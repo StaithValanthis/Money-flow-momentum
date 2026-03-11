@@ -159,3 +159,17 @@ runner_trailing_enabled: true
 #   require_readiness_for_optimizer: true
 #   pause_on_kill_switch: true
 #   pause_on_burnin_gate_breach: true
+#   # Demo-only auto-adopt: automatically activate a better candidate as Demo active config (never touches Live)
+#   auto_adopt_demo_candidates: false
+#   min_trades_for_demo_adoption: 50
+#   min_hours_between_demo_adoptions: 24.0
+#   require_shadow_before_demo_adoption: false
+#
+# Demo-only research mode (operating_mode: demo_research). Ignored in live_guarded.
+# demo_research:
+#   fixed_equity_enabled: true
+#   fixed_equity_usdt: 1000.0
+#   relaxed_kill_switch_enabled: true
+#   demo_max_daily_drawdown_pct: 15.0
+#   demo_max_daily_realized_loss_usdt: 150.0
+#   demo_research_burnin_permissive: true

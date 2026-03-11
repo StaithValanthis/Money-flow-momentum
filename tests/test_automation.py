@@ -297,6 +297,9 @@ def test_automation_blocked_by_health_when_not_ready_with_trades(tmp_path: Path,
     assert snap["state"] == "BLOCKED_BY_HEALTH"
     assert snap["last_recommendation_status"] == "NOT_READY"
     assert out["details"].get("reason") == "readiness_not_ok"
+
+
+def test_automation_full_cycle_eval_opt_shadow_recommendation(tmp_path: Path, monkeypatch) -> None:
     """When trades and readiness are sufficient, automation runs evaluation, optimizer, shadow, and writes recommendation."""
     db_path = tmp_path / "bot.db"
     db = Database(str(db_path))

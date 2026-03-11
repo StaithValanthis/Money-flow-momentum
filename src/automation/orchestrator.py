@@ -16,6 +16,7 @@ from typing import Any, Optional, Tuple
 from src.automation.state import (
     AutomationSnapshot,
     RECOMMENDATION_CONTINUE_DEMO,
+    RECOMMENDATION_DEMO_AUTO_ADOPTED,
     RECOMMENDATION_NOT_READY,
     RECOMMENDATION_READY_FOR_CONFIG_REVIEW,
     STATE_AWAITING_MANUAL_APPROVAL,
@@ -24,6 +25,7 @@ from src.automation.state import (
     STATE_BLOCKED_BY_KILL_SWITCH,
     STATE_CANDIDATE_AVAILABLE,
     STATE_CONTINUE_DEMO_NO_CANDIDATE,
+    STATE_DEMO_AUTO_ADOPTED,
     STATE_EVALUATING,
     STATE_IDLE,
     STATE_OPTIMIZING,
@@ -34,7 +36,7 @@ from src.automation.state import (
     transition,
 )
 from src.config.config import Config, EnvSettings, get_bybit_env, load_config
-from src.config.versioning import get_active_config_id
+from src.config.versioning import activate_config_version, get_active_config_id
 from src.evaluation.evaluator import Evaluator
 from src.optimizer.search import run_optimization
 from src.shadow.shadow_runner import ShadowRunner
@@ -109,6 +111,7 @@ def _write_recommendation_artifacts(config: Config, snap: AutomationSnapshot, de
         f.write(f"- last_optimizer_run_id: {snap.last_optimizer_run_id or 'N/A'}\n")
         f.write(f"- best_candidate_config_id: {snap.best_candidate_config_id or 'none'}\n")
         f.write(f"- shadow_candidate_config_id: {snap.shadow_candidate_config_id or 'none'}\n")
+        f.write(f"- last_demo_adoption_ts: {snap.last_demo_adoption_ts or 'N/A'}\n")
         if snap.blocked_reason:
             f.write(f"- blocked_reason: {snap.blocked_reason}\n")
         if details.get("blocked_hint"):
@@ -357,6 +360,52 @@ def run_demo_automation_cycle(config_path: Optional[Path] = None) -> dict[str, A
                     snap.shadow_candidate_config_id = cid
                     snap = transition(snap, STATE_SHADOW_RUNNING)
                     log.info(f"Automation: shadow started for candidate {cid}")
+
+        # --- 4.5) Demo-only auto-adopt: activate best candidate as new Demo active config ---
+        auto_adopt = getattr(auto, "auto_adopt_demo_candidates", False)
+        min_trades_adopt = getattr(auto, "min_trades_for_demo_adoption", 50)
+        min_hours_adopt = getattr(auto, "min_hours_between_demo_adoptions", 24.0)
+        require_shadow_adopt = getattr(auto, "require_shadow_before_demo_adoption", False)
+        cooldown_ok = (
+            snap.last_demo_adoption_ts is None
+            or (now_ms - snap.last_demo_adoption_ts) >= int(min_hours_adopt * 3600 * 1000)
+        )
+        shadow_ok = not require_shadow_adopt or (snap.shadow_candidate_config_id == snap.best_candidate_config_id)
+        if (
+            auto_adopt
+            and snap.best_candidate_config_id
+            and trade_count >= min_trades_adopt
+            and cooldown_ok
+            and shadow_ok
+        ):
+            if activate_config_version(
+                snap.best_candidate_config_id,
+                config.database_path,
+                reason="demo_auto_adopt",
+                manual=False,
+            ):
+                snap.last_demo_adoption_ts = now_ms
+                snap.last_recommendation_status = RECOMMENDATION_DEMO_AUTO_ADOPTED
+                snap = transition(snap, STATE_DEMO_AUTO_ADOPTED)
+                _persist_snapshot(db, snap)
+                new_active = get_active_config_id(config.database_path)
+                details = {
+                    "reason": "demo_auto_adopted",
+                    "active_config_id": new_active,
+                    "previous_active_config_id": config_id,
+                    "adopted_config_id": snap.best_candidate_config_id,
+                    "recommendation_message": (
+                        "Candidate met Demo auto-adopt rules and has been activated for Demo research. "
+                        "Restart Demo to use new config. Live unchanged."
+                    ),
+                    "next_commands": [
+                        "Restart Demo process to load new active config.",
+                        "python run_bot.py promote --config-id <id>  # when ready to promote to Live",
+                    ],
+                }
+                _write_recommendation_artifacts(config, snap, details)
+                return {"snapshot": asdict(snap), "details": details}
+            # activation failed (e.g. config not in DB); fall through to normal recommendation
 
         # --- 5) Recommendation summary ---
         # For Demo we conservatively say:

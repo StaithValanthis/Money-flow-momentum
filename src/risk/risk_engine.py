@@ -34,6 +34,17 @@ class RiskEngine:
         self._trades_this_hour: list[float] = []
         self._api_errors_this_period: int = 0
         self._last_error_reset_ts: float = 0
+        self._demo_drawdown_pct: Optional[float] = None
+        self._demo_realized_loss_usdt: Optional[float] = None
+
+    def set_demo_kill_switch_override(
+        self,
+        max_drawdown_pct: Optional[float] = None,
+        max_realized_loss_usdt: Optional[float] = None,
+    ) -> None:
+        """Use Demo-specific kill-switch thresholds (demo_research relaxed mode). Pass None to clear."""
+        self._demo_drawdown_pct = max_drawdown_pct
+        self._demo_realized_loss_usdt = max_realized_loss_usdt
 
     def set_equity(self, equity_usdt: float) -> None:
         """Update equity for sizing."""
@@ -158,19 +169,21 @@ class RiskEngine:
         """Check daily drawdown kill switch."""
         if not self.config.kill_switch_enabled or self.daily_pnl_start is None:
             return True, None
+        limit_pct = self._demo_drawdown_pct if self._demo_drawdown_pct is not None else self.config.max_daily_drawdown_pct
         drawdown_pct = (self.daily_pnl_start - current_equity) / self.daily_pnl_start * 100
-        if drawdown_pct >= self.config.max_daily_drawdown_pct:
+        if drawdown_pct >= limit_pct:
             self.kill_switch_triggered = True
-            return False, f"Daily drawdown {drawdown_pct:.2f}% >= {self.config.max_daily_drawdown_pct}%"
+            return False, f"Daily drawdown {drawdown_pct:.2f}% >= {limit_pct}%"
         return True, None
 
     def check_daily_realized_loss(self) -> tuple[bool, Optional[str]]:
         """Check daily realized loss kill switch."""
         if not self.config.kill_switch_enabled:
             return True, None
-        if self.daily_realized_pnl <= -self.config.max_daily_realized_loss_usdt:
+        limit_usdt = self._demo_realized_loss_usdt if self._demo_realized_loss_usdt is not None else self.config.max_daily_realized_loss_usdt
+        if self.daily_realized_pnl <= -limit_usdt:
             self.kill_switch_triggered = True
-            return False, f"Daily realized loss {-self.daily_realized_pnl:.2f} >= {self.config.max_daily_realized_loss_usdt}"
+            return False, f"Daily realized loss {-self.daily_realized_pnl:.2f} >= {limit_usdt}"
         return True, None
 
     def check_stale_data(self, last_ts_ms: int, now_ms: int) -> tuple[bool, Optional[str]]:

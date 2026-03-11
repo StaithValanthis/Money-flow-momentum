@@ -184,7 +184,8 @@ CREATE TABLE IF NOT EXISTS automation_state (
     last_recommendation_status TEXT,
     blocked_reason TEXT,
     last_error TEXT,
-    updated_ts INTEGER NOT NULL
+    updated_ts INTEGER NOT NULL,
+    last_demo_adoption_ts INTEGER
 );
 """
 
@@ -197,4 +198,5 @@ STAGE3_ALTERS = [
     "ALTER TABLE entry_decisions ADD COLUMN config_id TEXT;",
     "ALTER TABLE lifecycle_events ADD COLUMN config_id TEXT;",
     "ALTER TABLE equity_curve ADD COLUMN config_id TEXT;",
+    "ALTER TABLE automation_state ADD COLUMN last_demo_adoption_ts INTEGER;",
 ]

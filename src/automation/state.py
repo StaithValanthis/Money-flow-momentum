@@ -20,6 +20,7 @@ STATE_CANDIDATE_AVAILABLE = "CANDIDATE_AVAILABLE"
 STATE_CONTINUE_DEMO_NO_CANDIDATE = "CONTINUE_DEMO_NO_CANDIDATE"
 STATE_SHADOW_RUNNING = "SHADOW_RUNNING"
 STATE_AWAITING_MANUAL_APPROVAL = "AWAITING_MANUAL_APPROVAL"
+STATE_DEMO_AUTO_ADOPTED = "DEMO_AUTO_ADOPTED"
 STATE_BLOCKED_BY_BURNIN = "BLOCKED_BY_BURNIN"
 STATE_BLOCKED_BY_KILL_SWITCH = "BLOCKED_BY_KILL_SWITCH"
 STATE_BLOCKED_BY_HEALTH = "BLOCKED_BY_HEALTH"
@@ -30,6 +31,7 @@ RECOMMENDATION_NOT_READY = "NOT_READY"
 RECOMMENDATION_CONTINUE_DEMO = "CONTINUE_DEMO"
 RECOMMENDATION_READY_FOR_CONFIG_REVIEW = "READY_FOR_CONFIG_REVIEW"
 RECOMMENDATION_READY_FOR_LIVE_REVIEW = "READY_FOR_LIVE_REVIEW"
+RECOMMENDATION_DEMO_AUTO_ADOPTED = "DEMO_AUTO_ADOPTED"
 
 
 @dataclass
@@ -49,6 +51,7 @@ class AutomationSnapshot:
     blocked_reason: Optional[str] = None
     last_error: Optional[str] = None
     updated_ts: int = 0
+    last_demo_adoption_ts: Optional[int] = None
 
     @classmethod
     def from_db(cls, row: dict[str, Any] | None) -> "AutomationSnapshot":
@@ -69,6 +72,7 @@ class AutomationSnapshot:
             blocked_reason=data.get("blocked_reason"),
             last_error=data.get("last_error"),
             updated_ts=data.get("updated_ts") or int(time.time() * 1000),
+            last_demo_adoption_ts=data.get("last_demo_adoption_ts"),
         )
 
     def to_db_dict(self) -> dict[str, Any]:

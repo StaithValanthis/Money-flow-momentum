@@ -289,6 +289,7 @@ class Database:
             "blocked_reason",
             "last_error",
             "updated_ts",
+            "last_demo_adoption_ts",
         ]
         values = [state.get(f) for f in fields]
         placeholders = ",".join("?" for _ in fields)

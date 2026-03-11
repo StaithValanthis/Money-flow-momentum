@@ -9,7 +9,7 @@ from typing import Optional, Any
 import typer
 from loguru import logger
 
-from src.config.config import load_config, Config, EnvSettings, resolve_bybit_credentials, get_bybit_env
+from src.config.config import load_config, Config, EnvSettings, resolve_bybit_credentials, get_bybit_env, get_effective_equity_for_sizing, get_effective_operating_mode
 from src.config.versioning import get_active_config_id, ensure_stage3_schema, load_config_from_artifact, register_config_version
 from src.exchange.bybit_client import BybitClient
 from src.exchange.ws_shard import PublicWSShardManager
@@ -104,6 +104,13 @@ class TradingBot:
         )
         self._scorer = FlowImpulseScorer(self.config.score_weights, self.config.entry)
         self._risk = RiskEngine(self.config.risk, equity_usdt=10_000.0)
+        if get_effective_operating_mode(self.config, self.env) == "demo_research":
+            dr = getattr(self.config, "demo_research", None)
+            if dr and getattr(dr, "relaxed_kill_switch_enabled", False):
+                self._risk.set_demo_kill_switch_override(
+                    max_drawdown_pct=getattr(dr, "demo_max_daily_drawdown_pct", 15.0),
+                    max_realized_loss_usdt=getattr(dr, "demo_max_daily_realized_loss_usdt", 150.0),
+                )
         self._executor = Executor(
             self._client,
             self.config.execution,
@@ -447,9 +454,10 @@ class TradingBot:
         log.info("Boot: initializing")
         self._init_components()
         self._equity_usdt = self._fetch_equity()
-        self._risk.set_equity(self._equity_usdt)
+        effective_equity = get_effective_equity_for_sizing(self.config, self.env, self._equity_usdt)
+        self._risk.set_equity(effective_equity)
         self._risk.set_daily_start_pnl(self._equity_usdt)
-        log.info(f"Equity: {self._equity_usdt:.2f} USDT")
+        log.info(f"Equity: {self._equity_usdt:.2f} USDT" + (f" (sizing: {effective_equity:.2f} fixed)" if effective_equity != self._equity_usdt else ""))
 
         if self.config.exchange.one_way_mode:
             try:
@@ -710,6 +718,8 @@ class TradingBot:
                     time.sleep(self.config.score_interval_seconds)
                     continue
                 self._equity_usdt = self._fetch_equity()
+                effective_equity = get_effective_equity_for_sizing(self.config, self.env, self._equity_usdt)
+                self._risk.set_equity(effective_equity)
                 ok, reason = self._risk.check_daily_drawdown(self._equity_usdt)
                 if not ok:
                     log.error(f"Kill switch: {reason}")
@@ -792,8 +802,9 @@ class TradingBot:
                         (p.symbol, p.side, p.size, abs(p.entry_price - p.stop_loss) if p.stop_loss else 0)
                         for p in self._positions.get_all_positions()
                     ]
+                    effective_equity = get_effective_equity_for_sizing(self.config, self.env, self._equity_usdt)
                     budget_state = build_budget_state(
-                        self._equity_usdt,
+                        effective_equity,
                         positions_for_budget,
                         symbol_to_cluster if stage4 else {},
                     )

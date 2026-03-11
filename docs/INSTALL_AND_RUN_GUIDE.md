@@ -34,6 +34,8 @@ You can run **Demo** and **Live** simultaneously on one host with full isolation
 
 - **Only the Demo instance** runs the automation timer (evaluate, optimize, shadow, recommendation). Live does not run automation.
 - **Promotion remains manual:** operator promotes config and promote-env when appropriate; no auto-promote.
+- **Demo auto-adopt (optional):** When `automation.auto_adopt_demo_candidates` is true in the Demo config, the Demo instance can automatically activate a better candidate as its **Demo** active config (never touches Live). The new config is used after the **next Demo restart**. Cross-instance promotion to Live still requires `promote-to-live` and/or `promote-env` with explicit operator action.
+- **Fixed-equity Demo research (optional):** When `operating_mode: demo_research` and `demo_research.fixed_equity_enabled: true`, Demo uses a **fixed synthetic equity** (e.g. $1000) for position sizing and risk budgeting instead of the wallet balance, so research is not distorted by large Demo balances. `demo_research.relaxed_kill_switch_enabled` allows wider Demo-only kill-switch thresholds; `demo_research.demo_research_burnin_permissive` raises burn-in limits for long-running research. Live always uses actual equity and strict limits. Check with `python run_bot.py show-runtime-mode` (shows `fixed_equity_enabled`, `effective_strategy_equity_usdt`, `relaxed_kill_switch_enabled`).
 
 **Validate per instance:**
 ```bash

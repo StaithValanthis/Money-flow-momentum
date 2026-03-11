@@ -179,6 +179,7 @@ def activate_config_version(
     config_id: str,
     db_path: str = "data/bot.db",
     reason: Optional[str] = None,
+    manual: bool = True,
 ) -> bool:
     """Set config as active; demote current active to baseline or archived."""
     ensure_stage3_schema(db_path)
@@ -196,7 +197,7 @@ def activate_config_version(
         if prev_id != config_id:
             conn.execute(
                 "INSERT INTO promotion_events (promoted_config_id, previous_active_config_id, promoted_at, reason, manual) VALUES (?, ?, ?, ?, ?)",
-                (config_id, prev_id, int(time.time() * 1000), reason or "activate_config_version", 1),
+                (config_id, prev_id, int(time.time() * 1000), reason or "activate_config_version", 1 if manual else 0),
             )
             conn.commit()
     db.close()

@@ -287,8 +287,8 @@ class BurnInConfig(BaseModel):
 
     burn_in_enabled: bool = False
     burn_in_phase: str = Field(default="demo", pattern="^(demo|testnet|live_small|live_guarded)$")
-    burn_in_max_trades_per_day: int = Field(default=20, ge=1, le=200)
-    burn_in_max_notional_usdt: float = Field(default=5_000.0, ge=100, le=500_000)
+    burn_in_max_trades_per_day: int = Field(default=20, ge=1, le=2000)
+    burn_in_max_notional_usdt: float = Field(default=5_000.0, ge=100, le=2_000_000)
     burn_in_required_report_window_hours: float = Field(default=24.0, ge=1, le=168)
     burn_in_min_expected_heartbeat_coverage: float = Field(default=0.8, ge=0, le=1)
     burn_in_fail_on_protection_mismatch: bool = True
@@ -312,6 +312,22 @@ class AutomationConfig(BaseModel):
     require_readiness_for_optimizer: bool = True
     pause_on_kill_switch: bool = True
     pause_on_burnin_gate_breach: bool = True
+    # Demo-only auto-adopt: automatically activate a better candidate as Demo active config (never touches Live)
+    auto_adopt_demo_candidates: bool = False
+    min_trades_for_demo_adoption: int = Field(default=50, ge=10, le=10000)
+    min_hours_between_demo_adoptions: float = Field(default=24.0, ge=1.0, le=720.0)
+    require_shadow_before_demo_adoption: bool = False
+
+
+class DemoResearchConfig(BaseModel):
+    """Demo-only research mode: fixed synthetic equity, relaxed kill switch, permissive burn-in. Only active when operating_mode == demo_research."""
+
+    fixed_equity_enabled: bool = False
+    fixed_equity_usdt: float = Field(default=1000.0, ge=100.0, le=1_000_000.0)
+    relaxed_kill_switch_enabled: bool = False
+    demo_max_daily_drawdown_pct: float = Field(default=15.0, ge=5.0, le=50.0)
+    demo_max_daily_realized_loss_usdt: float = Field(default=150.0, ge=50.0, le=10_000.0)
+    demo_research_burnin_permissive: bool = True
 
 
 class LoggingConfig(BaseModel):
@@ -350,6 +366,7 @@ class Config(BaseModel):
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
     burn_in: BurnInConfig = Field(default_factory=BurnInConfig)
     automation: AutomationConfig = Field(default_factory=AutomationConfig)
+    demo_research: DemoResearchConfig = Field(default_factory=DemoResearchConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     portfolio_exposure: PortfolioExposureConfig = Field(default_factory=PortfolioExposureConfig)
     database_path: str = "data/bot.db"
@@ -423,6 +440,14 @@ def normalize_operating_mode(config: Config, env: EnvSettings) -> None:
             config.burn_in.burn_in_max_notional_usdt = max(
                 config.burn_in.burn_in_max_notional_usdt, 500_000.0
             )
+            dr = getattr(config, "demo_research", None)
+            if dr and getattr(dr, "demo_research_burnin_permissive", True):
+                config.burn_in.burn_in_max_trades_per_day = max(
+                    config.burn_in.burn_in_max_trades_per_day, 500
+                )
+                config.burn_in.burn_in_max_notional_usdt = max(
+                    config.burn_in.burn_in_max_notional_usdt, 1_000_000.0
+                )
             config.automation.enabled = True
             config.automation.demo_orchestration_enabled = True
             config.automation.auto_start_shadow_for_best_candidate = True
@@ -441,6 +466,40 @@ def normalize_operating_mode(config: Config, env: EnvSettings) -> None:
                 )
     config.operating_mode = effective
 
+
+def get_effective_equity_for_sizing(config: Config, env: EnvSettings, fetched_equity_usdt: float) -> float:
+    """
+    Return the equity to use for risk sizing and allocator.
+    When operating_mode == demo_research and demo_research.fixed_equity_enabled, returns fixed_equity_usdt;
+    otherwise returns fetched_equity_usdt. Live always uses fetched (actual).
+    """
+    mode = get_effective_operating_mode(config, env)
+    if mode != OPERATING_MODE_DEMO_RESEARCH:
+        return fetched_equity_usdt
+    dr = getattr(config, "demo_research", None)
+    if dr and getattr(dr, "fixed_equity_enabled", False):
+        return float(getattr(dr, "fixed_equity_usdt", 1000.0))
+    return fetched_equity_usdt
+
+
+def get_demo_research_runtime_info(config: Config, env: EnvSettings) -> dict:
+    """Return dict with fixed_equity_enabled, effective_equity_source, effective_strategy_equity_usdt (when fixed), relaxed_kill_switch_enabled."""
+    mode = get_effective_operating_mode(config, env)
+    dr = getattr(config, "demo_research", None)
+    out = {
+        "fixed_equity_enabled": False,
+        "effective_equity_source": "actual",
+        "effective_strategy_equity_usdt": None,
+        "relaxed_kill_switch_enabled": False,
+    }
+    if mode != OPERATING_MODE_DEMO_RESEARCH or not dr:
+        return out
+    out["fixed_equity_enabled"] = getattr(dr, "fixed_equity_enabled", False)
+    out["effective_equity_source"] = "fixed" if out["fixed_equity_enabled"] else "actual"
+    if out["fixed_equity_enabled"]:
+        out["effective_strategy_equity_usdt"] = float(getattr(dr, "fixed_equity_usdt", 1000.0))
+    out["relaxed_kill_switch_enabled"] = getattr(dr, "relaxed_kill_switch_enabled", False)
+    return out
 
 def load_config(
     config_path: Optional[Path] = None,

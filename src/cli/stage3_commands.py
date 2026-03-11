@@ -582,7 +582,7 @@ def register_stage3_cli(app: typer.Typer) -> None:
         config_path: Optional[Path] = typer.Option(None, "--config", "-c"),
     ) -> None:
         """Show operating mode, environment, automation, and manual approval gates."""
-        from src.config.config import resolve_bybit_credentials, get_bybit_env, get_effective_operating_mode
+        from src.config.config import resolve_bybit_credentials, get_bybit_env, get_effective_operating_mode, get_demo_research_runtime_info
         from src.cli.validate_env import _has_dual_key_demo, _has_dual_key_live, _has_legacy_keys
         config, env = load_config(config_path)
         env_type = get_bybit_env(env)
@@ -591,6 +591,13 @@ def register_stage3_cli(app: typer.Typer) -> None:
         if getattr(config, "instance_name", None):
             typer.echo(f"instance_name: {config.instance_name}")
         typer.echo(f"selected_environment: {env_type.upper()}")
+        if operating_mode == "demo_research":
+            info = get_demo_research_runtime_info(config, env)
+            typer.echo(f"fixed_equity_enabled: {info['fixed_equity_enabled']}")
+            typer.echo(f"effective_equity_source: {info['effective_equity_source']}")
+            if info.get("effective_strategy_equity_usdt") is not None:
+                typer.echo(f"effective_strategy_equity_usdt: {info['effective_strategy_equity_usdt']}")
+            typer.echo(f"relaxed_kill_switch_enabled: {info['relaxed_kill_switch_enabled']}")
         auto = getattr(config, "automation", None)
         automation_active = bool(auto and getattr(auto, "enabled", False) and getattr(auto, "demo_orchestration_enabled", False))
         typer.echo(f"automation_active: {automation_active}")
@@ -793,6 +800,14 @@ def register_stage3_cli(app: typer.Typer) -> None:
         env_type = get_bybit_env(env)
         typer.echo(f"operating_mode: {operating_mode}")
         typer.echo(f"selected_environment: {env_type.upper()}")
+        if operating_mode == "demo_research":
+            from src.config.config import get_demo_research_runtime_info
+            info = get_demo_research_runtime_info(config, env)
+            typer.echo(f"fixed_equity_enabled: {info['fixed_equity_enabled']}")
+            typer.echo(f"effective_equity_source: {info['effective_equity_source']}")
+            if info.get("effective_strategy_equity_usdt") is not None:
+                typer.echo(f"effective_strategy_equity_usdt: {info['effective_strategy_equity_usdt']}")
+            typer.echo(f"relaxed_kill_switch_enabled: {info['relaxed_kill_switch_enabled']}")
         auto = getattr(config, "automation", None)
         automation_active = bool(auto and getattr(auto, "enabled", False) and getattr(auto, "demo_orchestration_enabled", False))
         typer.echo(f"automation_active: {automation_active}")

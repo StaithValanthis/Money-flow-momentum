@@ -105,7 +105,7 @@ sudo systemctl start money-flow-momentum-automation.timer
 
 ## 5. Demo research start (demo_research)
 
-1. Set in config: `operating_mode: demo_research` (or leave unset with burn_in_phase: demo), `burn_in_enabled: true`, `burn_in_phase: demo`, `dry_run: false` (for real Demo orders; bootstrap sets this when you choose demo), and **demo** keys in `.env`: `BYBIT_ENV=demo`, `BYBIT_DEMO_API_KEY`, `BYBIT_DEMO_API_SECRET` (create from mainnet account → Demo Trading; do not use testnet for demo).
+1. Set in config: `operating_mode: demo_research` (or leave unset with burn_in_phase: demo), `burn_in_enabled: true`, `burn_in_phase: demo`, `dry_run: false` (for real Demo orders; bootstrap sets this when you choose demo), and **demo** keys in `.env`: `BYBIT_ENV=demo`, `BYBIT_DEMO_API_KEY`, `BYBIT_DEMO_API_SECRET` (create from mainnet account → Demo Trading; do not use testnet for demo). Optionally enable **fixed-equity Demo research**: `demo_research.fixed_equity_enabled: true`, `demo_research.fixed_equity_usdt: 1000`, `demo_research.relaxed_kill_switch_enabled: true` so Demo sizes from a fixed research capital and uses relaxed kill-switch limits; Live is unaffected.
 2. Run:
 
 ```bash
@@ -363,7 +363,8 @@ After demo or small-live run, use Stage 3 CLI for evaluation, optimization, shad
 - **Demo automation (optional):**  
   One-shot: `python run_bot.py automation cycle`  
   Status: `python run_bot.py automation status` or `./scripts/automation_status.sh`  
-  For hands-off Demo orchestration, use the **automation timer**: `sudo systemctl enable money-flow-momentum-automation.timer && sudo systemctl start money-flow-momentum-automation.timer`. The timer runs `automation cycle` every 15 minutes; it does not start the trading bot and does not auto-promote config or environment. The main bot service must be running separately for trading.
+  For hands-off Demo orchestration, use the **automation timer**: `sudo systemctl enable money-flow-momentum-automation.timer && sudo systemctl start money-flow-momentum-automation.timer`. The timer runs `automation cycle` every 15 minutes; it does not start the trading bot and does not auto-promote config or environment. The main bot service must be running separately for trading.  
+  **Demo auto-adopt:** When `automation.auto_adopt_demo_candidates` is true (in Demo config), a candidate that meets the adoption rules (min trades, cooldown, optional shadow) can be automatically activated as the Demo instance’s active config; the change takes effect **after the next Demo restart**. Live is never auto-updated; to promote a Demo candidate to Live, use `promote-to-live` and `promote-env` as above.
 
 ---
 
