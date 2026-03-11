@@ -451,6 +451,19 @@ def normalize_operating_mode(config: Config, env: EnvSettings) -> None:
             config.automation.enabled = True
             config.automation.demo_orchestration_enabled = True
             config.automation.auto_start_shadow_for_best_candidate = True
+            # Demo-only research risk profile: if fixed-equity mode is enabled, cap notionals relative to fixed equity
+            dr = getattr(config, "demo_research", None)
+            if dr and getattr(dr, "fixed_equity_enabled", False):
+                fixed_eq = float(getattr(dr, "fixed_equity_usdt", 1000.0))
+                # Per-symbol notional cap: at most 1x fixed equity (unless user already set a lower value)
+                if config.risk.max_notional_per_symbol_usdt > fixed_eq:
+                    config.risk.max_notional_per_symbol_usdt = max(fixed_eq, config.risk.min_notional_per_trade_usdt)
+                # Portfolio notional cap: at most 3x fixed equity (unless user already set a lower value)
+                max_portfolio_cap = fixed_eq * 3.0
+                if config.risk.max_portfolio_notional_usdt <= 0:
+                    config.risk.max_portfolio_notional_usdt = max_portfolio_cap
+                elif config.risk.max_portfolio_notional_usdt > max_portfolio_cap:
+                    config.risk.max_portfolio_notional_usdt = max_portfolio_cap
         else:
             # live_guarded: stricter effective profile than demo_research
             config.burn_in.burn_in_phase = "live_guarded"

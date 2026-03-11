@@ -155,3 +155,39 @@ def test_risk_engine_sizing_uses_equity_from_set_equity() -> None:
     )
     assert result.reject_reason is None
     assert result.risk_usdt == pytest.approx(10.0, rel=0.01)
+
+
+def test_demo_research_notional_capped_by_fixed_equity() -> None:
+    """In demo_research fixed-equity mode, risk caps reduce max_notional_per_symbol and portfolio notional."""
+    config = Config()
+    config.operating_mode = OPERATING_MODE_DEMO_RESEARCH
+    # Very loose risk caps before normalization
+    config.risk.max_notional_per_symbol_usdt = 10_000.0
+    config.risk.max_portfolio_notional_usdt = 50_000.0
+    config.demo_research = DemoResearchConfig(
+        fixed_equity_enabled=True,
+        fixed_equity_usdt=1000.0,
+    )
+    env = EnvSettings()
+    env.bybit_env = "demo"
+    normalize_operating_mode(config, env)
+    # After normalization, per-symbol cap should be <= fixed equity, portfolio cap <= 3x fixed equity
+    assert config.risk.max_notional_per_symbol_usdt <= 1000.0
+    assert config.risk.max_portfolio_notional_usdt <= 3000.0
+    # And a very aggressive risk_per_trade_pct cannot push notional above that cap
+    risk_cfg = config.risk
+    risk_cfg.risk_per_trade_pct = 20.0  # 20% of 1000 = 200 USDT of risk
+    engine = RiskEngine(risk_cfg, equity_usdt=1000.0)
+    # Stop very close to entry so unconstrained notional would be huge
+    result = engine.compute_position_size(
+        symbol="BTCUSDT",
+        side="Buy",
+        entry_price=50_000.0,
+        stop_price=49_900.0,  # distance = 100
+        qty_step=0.001,
+        min_qty=0.001,
+        min_notional=10.0,
+        max_notional=config.risk.max_notional_per_symbol_usdt,
+    )
+    assert result.reject_reason is None
+    assert result.notional_usdt <= config.risk.max_notional_per_symbol_usdt + 1e-6
