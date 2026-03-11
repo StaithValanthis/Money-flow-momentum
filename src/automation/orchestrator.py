@@ -70,12 +70,13 @@ def _persist_snapshot(db: Database, snap: AutomationSnapshot) -> None:
 
 
 def _write_recommendation_artifacts(config: Config, snap: AutomationSnapshot, details: dict[str, Any]) -> None:
-    base = automation_dir()
+    base = automation_dir(Path(config.artifacts_root))
     base.mkdir(parents=True, exist_ok=True)
     ts = int(time.time() * 1000)
     payload: dict[str, Any] = {
         "timestamp_ms": ts,
         "state": snap.state,
+        "operating_mode": getattr(config, "operating_mode", None) or "live_guarded",
         "automation": {
             "enabled": getattr(config, "automation", None).enabled if getattr(config, "automation", None) else False,
         },
@@ -159,7 +160,8 @@ def run_demo_automation_cycle(config_path: Optional[Path] = None) -> dict[str, A
         burn = getattr(config, "burn_in", None)
         window_hours = getattr(burn, "burn_in_required_report_window_hours", 24.0) if burn else 24.0
         from_ts = now_ms - int(window_hours * 3600 * 1000)
-        hb_path = Path("artifacts/heartbeat.json")
+        art_root = Path(config.artifacts_root)
+        hb_path = art_root / "heartbeat.json"
         config_id = get_active_config_id(config.database_path)
         try:
             readiness = compute_readiness(
@@ -177,7 +179,7 @@ def run_demo_automation_cycle(config_path: Optional[Path] = None) -> dict[str, A
             details = {
                 "reason": "readiness_error",
                 "active_config_id": config_id,
-                "next_commands": ["python run_bot.py burnin readiness --window %.1f --output artifacts/burnin" % window_hours],
+                "next_commands": ["python run_bot.py burnin readiness --window %.1f --output %s" % (window_hours, art_root / "burnin")],
             }
             _write_recommendation_artifacts(config, snap, details)
             return {"snapshot": asdict(snap), "details": details}
@@ -199,7 +201,7 @@ def run_demo_automation_cycle(config_path: Optional[Path] = None) -> dict[str, A
                 "readiness_details": readiness.details,
                 "next_commands": [
                     "python run_bot.py burnin report --window %.1f" % window_hours,
-                    "python run_bot.py burnin readiness --window %.1f --output artifacts/burnin" % window_hours,
+                    "python run_bot.py burnin readiness --window %.1f --output %s" % (window_hours, art_root / "burnin"),
                 ],
             }
             _write_recommendation_artifacts(config, snap, details)
@@ -209,7 +211,7 @@ def run_demo_automation_cycle(config_path: Optional[Path] = None) -> dict[str, A
             snap.last_recommendation_status = RECOMMENDATION_NOT_READY
             snap = transition(snap, STATE_BLOCKED_BY_BURNIN, reason="burnin_gate_breach")
             _persist_snapshot(db, snap)
-            breach_hint = "Review artifacts/burnin and fix limits or wait for window to clear."
+            breach_hint = "Review %s and fix limits or wait for window to clear." % (art_root / "burnin")
             if gate_breaches > 100:
                 breach_hint = "Many gate breaches ({}). Run: python run_bot.py burnin report --window %.1f ; review config limits and breach reasons.".format(gate_breaches) % window_hours
             details = {
@@ -219,7 +221,7 @@ def run_demo_automation_cycle(config_path: Optional[Path] = None) -> dict[str, A
                 "blocked_hint": breach_hint,
                 "next_commands": [
                     "python run_bot.py burnin report --window %.1f" % window_hours,
-                    "python run_bot.py burnin readiness --window %.1f --output artifacts/burnin" % window_hours,
+                    "python run_bot.py burnin readiness --window %.1f --output %s" % (window_hours, art_root / "burnin"),
                 ],
             }
             _write_recommendation_artifacts(config, snap, details)
@@ -239,7 +241,7 @@ def run_demo_automation_cycle(config_path: Optional[Path] = None) -> dict[str, A
                 "readiness_message": readiness.message,
                 "next_commands": [
                     "python run_bot.py burnin report --window %.1f" % window_hours,
-                    "python run_bot.py burnin readiness --window %.1f --output artifacts/burnin" % window_hours,
+                    "python run_bot.py burnin readiness --window %.1f --output %s" % (window_hours, art_root / "burnin"),
                 ],
             }
             _write_recommendation_artifacts(config, snap, details)
@@ -417,7 +419,7 @@ def get_automation_status(config_path: Optional[Path] = None) -> dict[str, Any]:
     config, env, db = _load_config_and_db(config_path)
     try:
         snap = _load_snapshot(db)
-        base = automation_dir()
+        base = automation_dir(Path(config.artifacts_root))
         latest_json = base / "automation_status.json"
         artifact_info: dict[str, Any] = {}
         if latest_json.exists():

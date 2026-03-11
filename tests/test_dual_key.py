@@ -59,6 +59,7 @@ def test_resolve_testnet_uses_testnet_keys_when_set():
 def test_resolve_demo_fallback_legacy():
     """When env_type=demo and only legacy keys set, return legacy and is_legacy=True."""
     env = EnvSettings(
+        _env_file=None,
         bybit_env="demo",
         bybit_api_key="legacy_k",
         bybit_api_secret="legacy_s",
@@ -86,6 +87,7 @@ def test_resolve_live_fallback_legacy():
 def test_resolve_demo_empty_when_only_live_dual_key():
     """When env_type=demo and only live dual-key set (no legacy), return empty."""
     env = EnvSettings(
+        _env_file=None,
         bybit_env="demo",
         bybit_live_api_key="lk",
         bybit_live_api_secret="ls",
@@ -233,7 +235,11 @@ database_path: """ + str((tmp_path / "data" / "bot.db").as_posix()) + """
     orig = os.getcwd()
     try:
         os.chdir(tmp_path)
-        result = validate_environment(config_path=cfg, require_api_keys_for_live=True)
+        result = validate_environment(
+            config_path=cfg,
+            require_api_keys_for_live=True,
+            env_file_path=tmp_path / ".env",
+        )
         assert result.ok is False
         assert any("demo" in e.lower() and "live" in e.lower() for e in result.errors) or \
                any("credentials" in e.lower() or "DEMO" in e for e in result.errors)

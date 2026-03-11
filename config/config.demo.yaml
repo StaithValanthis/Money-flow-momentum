@@ -1,0 +1,19 @@
+# Demo research instance. Use with .env.demo (BYBIT_ENV=demo, BYBIT_DEMO_API_KEY/SECRET).
+# Paths are instance-scoped: data/demo/bot.db, artifacts/demo/, logs/demo/
+# Filename config.demo.yaml sets instance_name=demo automatically.
+operating_mode: demo_research
+mode: paper
+dry_run: false
+
+exchange:
+  testnet: false
+  one_way_mode: true
+  default_leverage: 5
+
+universe:
+  min_24h_turnover_usdt: 1000000
+  max_spread_bps: 50
+
+risk:
+  risk_per_trade_pct: 0.5
+  max_concurrent_positions: 5

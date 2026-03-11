@@ -15,7 +15,7 @@ CONFIG_STATUSES = frozenset({
     "baseline", "candidate", "staged", "active", "rejected", "rolled_back", "archived",
 })
 CONFIG_SOURCES = frozenset({
-    "manual", "optimizer", "shadow", "rollback", "bootstrap",
+    "manual", "optimizer", "shadow", "rollback", "bootstrap", "demo_import",
 })
 
 
@@ -143,12 +143,43 @@ def load_config_from_artifact(config_id: str, db_path: str = "data/bot.db") -> O
     path = Path(rec["artifact_path"])
     if not path.exists():
         return None
-    from src.config.config import load_config
-    config, _ = load_config(path)
-    return config
+    return _config_from_artifact_yaml(path)
 
 
-def activate_config_version(config_id: str, db_path: str = "data/bot.db") -> bool:
+def _config_from_artifact_yaml(artifact_path: Path) -> Optional[Config]:
+    """Load Config from an artifact YAML file (no env merge). Used for cross-instance import."""
+    if not artifact_path.exists():
+        return None
+    try:
+        import yaml
+        with open(artifact_path, encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+        if not data:
+            return None
+        return Config.model_validate(data)
+    except Exception as e:
+        log.warning(f"Failed to load config from artifact {artifact_path}: {e}")
+        return None
+
+
+def get_config_version_by_hash(config_hash: str, db_path: str = "data/bot.db") -> Optional[dict]:
+    """Find a config version in the registry by config_hash. Returns first match (any status)."""
+    ensure_stage3_schema(db_path)
+    db = _get_db(db_path)
+    conn = db._get_conn()
+    row = conn.execute(
+        "SELECT * FROM config_versions WHERE config_hash = ? ORDER BY created_at DESC LIMIT 1",
+        (config_hash,),
+    ).fetchone()
+    db.close()
+    return dict(row) if row else None
+
+
+def activate_config_version(
+    config_id: str,
+    db_path: str = "data/bot.db",
+    reason: Optional[str] = None,
+) -> bool:
     """Set config as active; demote current active to baseline or archived."""
     ensure_stage3_schema(db_path)
     rec = get_config_version(config_id, db_path)
@@ -165,7 +196,7 @@ def activate_config_version(config_id: str, db_path: str = "data/bot.db") -> boo
         if prev_id != config_id:
             conn.execute(
                 "INSERT INTO promotion_events (promoted_config_id, previous_active_config_id, promoted_at, reason, manual) VALUES (?, ?, ?, ?, ?)",
-                (config_id, prev_id, int(time.time() * 1000), "activate_config_version", 1),
+                (config_id, prev_id, int(time.time() * 1000), reason or "activate_config_version", 1),
             )
             conn.commit()
     db.close()
@@ -267,3 +298,74 @@ def diff_config_versions(
             else:
                 diffs[k] = {"from": v1, "to": v2}
     return diffs
+
+
+def import_candidate_to_live(
+    candidate_config_id: str,
+    demo_db_path: str,
+    live_db_path: str,
+    live_artifact_dir: Path,
+    description: str = "",
+    reason: str = "",
+    activate: bool = False,
+    dry_run: bool = False,
+) -> dict:
+    """
+    Import a candidate config from the Demo instance into the Live instance.
+    Reads the candidate from Demo DB and artifact, registers it in Live (or reuses existing by hash).
+    Does not activate unless activate=True.
+    Returns a result dict with ok, error, candidate_config_id, live_config_id, imported, already_present, activated.
+    """
+    result: dict = {
+        "ok": False,
+        "error": None,
+        "candidate_config_id": candidate_config_id,
+        "live_config_id": None,
+        "imported": False,
+        "already_present": False,
+        "activated": False,
+        "dry_run": dry_run,
+    }
+    rec = get_config_version(candidate_config_id, demo_db_path)
+    if not rec:
+        result["error"] = f"Candidate '{candidate_config_id}' not found in Demo DB ({demo_db_path})."
+        return result
+    artifact_path = Path(rec["artifact_path"]) if rec.get("artifact_path") else None
+    if not artifact_path or not artifact_path.exists():
+        result["error"] = f"Demo artifact not found: {rec.get('artifact_path')}. Run from repo root or check path."
+        return result
+    config = _config_from_artifact_yaml(artifact_path)
+    if not config:
+        result["error"] = "Could not load candidate config from artifact (invalid YAML or schema)."
+        return result
+    config_hash = compute_config_hash(config)
+    existing = get_config_version_by_hash(config_hash, live_db_path)
+    if existing:
+        live_config_id = existing["config_id"]
+        result["already_present"] = True
+        result["live_config_id"] = live_config_id
+    else:
+        if dry_run:
+            result["ok"] = True
+            result["live_config_id"] = f"(would create: {config_hash}_{int(time.time() * 1000)})"
+            result["imported"] = True
+            return result
+        live_artifact_dir = Path(live_artifact_dir)
+        live_artifact_dir.mkdir(parents=True, exist_ok=True)
+        live_config_id = register_config_version(
+            config,
+            version="imported",
+            status="candidate",
+            description=description or f"Imported from Demo candidate {candidate_config_id}",
+            source="demo_import",
+            parent_config_id=None,
+            db_path=live_db_path,
+            artifact_dir=live_artifact_dir,
+        )
+        result["live_config_id"] = live_config_id
+        result["imported"] = True
+    result["ok"] = True
+    if activate and not dry_run:
+        if activate_config_version(live_config_id, live_db_path, reason=reason or "promote-to-live"):
+            result["activated"] = True
+    return result

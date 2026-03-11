@@ -48,6 +48,99 @@ def test_config_hash_changes_with_content():
     assert compute_config_hash(c1) != compute_config_hash(c2)
 
 
+def test_operating_mode_explicit_demo_research():
+    """Explicit operating_mode demo_research sets permissive burn-in and automation."""
+    from src.config.config import load_config, get_effective_operating_mode, EnvSettings
+    import tempfile
+    import yaml
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        yaml.dump({
+            "operating_mode": "demo_research",
+            "mode": "paper",
+            "database_path": "data/bot.db",
+        }, f)
+        path = Path(f.name)
+    try:
+        config, env = load_config(path)
+        assert get_effective_operating_mode(config, env) == "demo_research"
+        assert config.burn_in.burn_in_enabled is True
+        assert config.burn_in.burn_in_phase == "demo"
+        assert config.automation.enabled is True
+        assert config.automation.demo_orchestration_enabled is True
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_operating_mode_explicit_live_guarded():
+    """Explicit operating_mode live_guarded sets demo_orchestration_enabled False and stricter burn-in caps when permissive."""
+    from src.config.config import load_config, get_effective_operating_mode, EnvSettings
+    import tempfile
+    import yaml
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        yaml.dump({
+            "operating_mode": "live_guarded",
+            "mode": "paper",
+            "database_path": "data/bot.db",
+            "burn_in": {
+                "burn_in_max_trades_per_day": 200,
+                "burn_in_max_notional_usdt": 500_000.0,
+            },
+        }, f)
+        path = Path(f.name)
+    try:
+        config, env = load_config(path)
+        assert get_effective_operating_mode(config, env) == "live_guarded"
+        assert config.burn_in.burn_in_phase == "live_guarded"
+        assert config.automation.demo_orchestration_enabled is False
+        # Stricter caps applied when values were at demo-default level
+        assert config.burn_in.burn_in_max_trades_per_day <= 50
+        assert config.burn_in.burn_in_max_notional_usdt <= 20_000.0
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_operating_mode_live_guarded_preserves_explicit_low_limits():
+    """live_guarded does not override operator-set low burn-in limits."""
+    from src.config.config import load_config, get_effective_operating_mode
+    import tempfile
+    import yaml
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        yaml.dump({
+            "operating_mode": "live_guarded",
+            "mode": "paper",
+            "database_path": "data/bot.db",
+            "burn_in": {
+                "burn_in_max_trades_per_day": 10,
+                "burn_in_max_notional_usdt": 5_000.0,
+            },
+        }, f)
+        path = Path(f.name)
+    try:
+        config, env = load_config(path)
+        assert get_effective_operating_mode(config, env) == "live_guarded"
+        assert config.burn_in.burn_in_max_trades_per_day == 10
+        assert config.burn_in.burn_in_max_notional_usdt == 5_000.0
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_operating_mode_legacy_fallback():
+    """Legacy config without operating_mode derives mode; demo+automation+demo phase -> demo_research else live_guarded."""
+    from src.config.config import load_config, get_effective_operating_mode, EnvSettings
+    import tempfile
+    import yaml
+    # No operating_mode, env defaults to demo but automation/burn_in default off -> live_guarded
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        yaml.dump({"mode": "paper", "database_path": "data/bot.db"}, f)
+        path = Path(f.name)
+    try:
+        config, env = load_config(path)
+        effective = get_effective_operating_mode(config, env)
+        assert effective in ("demo_research", "live_guarded")
+    finally:
+        path.unlink(missing_ok=True)
+
+
 def test_register_and_list_config_versions(db_path):
     ensure_stage3_schema(db_path)
     c = Config()
@@ -164,3 +257,39 @@ def test_promotion_eligibility():
     eligible2, reasons2 = check_promotion_eligibility(cand_low, shadow_decision_count=100, rules=PromotionRules(min_trade_count=30))
     assert not eligible2
     assert "insufficient_trade_count" in reasons2
+
+
+def test_instance_from_config_path():
+    """Instance name is derived from config filename for dual-instance isolation."""
+    from src.config.config import instance_from_config_path
+    assert instance_from_config_path(Path("config/config.demo.yaml")) == "demo"
+    assert instance_from_config_path(Path("config/config.live.yaml")) == "live"
+    assert instance_from_config_path(Path("config/config.yaml")) is None
+    assert instance_from_config_path(None) is None
+
+
+def test_load_config_instance_scoped_paths():
+    """Loading config.demo.yaml sets instance_name and instance-scoped paths."""
+    import tempfile
+    import yaml
+    from src.config.config import load_config, instance_from_config_path
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".demo.yaml", delete=False) as f:
+        yaml.dump({"operating_mode": "demo_research", "mode": "paper", "database_path": "data/bot.db"}, f)
+        demo_path = Path(f.name)
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".live.yaml", delete=False) as f:
+        yaml.dump({"operating_mode": "live_guarded", "mode": "live", "database_path": "data/bot.db"}, f)
+        live_path = Path(f.name)
+    try:
+        config_demo, _ = load_config(demo_path)
+        config_live, _ = load_config(live_path)
+        assert config_demo.instance_name == "demo"
+        assert config_demo.database_path == "data/demo/bot.db"
+        assert config_demo.artifacts_root == "artifacts/demo"
+        assert config_demo.logs_dir == "logs/demo"
+        assert config_live.instance_name == "live"
+        assert config_live.database_path == "data/live/bot.db"
+        assert config_live.artifacts_root == "artifacts/live"
+        assert config_live.logs_dir == "logs/live"
+    finally:
+        demo_path.unlink(missing_ok=True)
+        live_path.unlink(missing_ok=True)

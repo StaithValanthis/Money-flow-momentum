@@ -1,0 +1,19 @@
+# Live guarded instance. Use with .env.live (BYBIT_ENV=live, BYBIT_LIVE_API_KEY/SECRET).
+# Paths are instance-scoped: data/live/bot.db, artifacts/live/, logs/live/
+# Filename config.live.yaml sets instance_name=live automatically.
+operating_mode: live_guarded
+mode: live
+dry_run: false
+
+exchange:
+  testnet: false
+  one_way_mode: true
+  default_leverage: 5
+
+universe:
+  min_24h_turnover_usdt: 1000000
+  max_spread_bps: 50
+
+risk:
+  risk_per_trade_pct: 0.5
+  max_concurrent_positions: 5

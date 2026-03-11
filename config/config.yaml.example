@@ -1,5 +1,11 @@
 # Money Flow Momentum - Bybit V5 Trading Bot Config
 # Copy to config.yaml and customize
+#
+# Top-level operating mode (recommended):
+#   demo_research  - Autonomous Demo: trade, evaluate, optimize, shadow on Demo; no manual approval during research.
+#   live_guarded   - Guarded Live: stricter limits; config and Demo->Live promotion require manual approval.
+# Omit to derive from env/automation/burn_in (Demo+automation+demo phase -> demo_research; else live_guarded).
+operating_mode: demo_research
 
 mode: paper  # dry_run | paper | live
 dry_run: false  # true = simulated entries only (no orders); false = place real orders on selected env (Demo/Live)
@@ -127,11 +133,13 @@ startup_protection_required: false
 runner_trailing_enabled: true
 
 # Burn-in and live validation (see docs/BURN_IN_OPERATOR_RUNBOOK.md)
+# With operating_mode: demo_research these are set automatically (permissive for research).
+# With operating_mode: live_guarded use stricter limits.
 # burn_in:
-#   burn_in_enabled: false
-#   burn_in_phase: testnet   # testnet | live_small | live_guarded
-#   burn_in_max_trades_per_day: 20
-#   burn_in_max_notional_usdt: 5000.0
+#   burn_in_enabled: true
+#   burn_in_phase: demo   # demo | testnet | live_small | live_guarded
+#   burn_in_max_trades_per_day: 200
+#   burn_in_max_notional_usdt: 500000
 #   burn_in_required_report_window_hours: 24.0
 #   burn_in_min_expected_heartbeat_coverage: 0.8
 #   burn_in_fail_on_protection_mismatch: true
@@ -139,7 +147,7 @@ runner_trailing_enabled: true
 #   burn_in_max_slippage_bps: 50.0
 #   burn_in_max_reconnect_per_hour: 5
 
-# Demo orchestration / automation (off by default; see docs for details)
+# Demo orchestration (with operating_mode: demo_research these are enabled automatically)
 # automation:
 #   enabled: true
 #   demo_orchestration_enabled: true

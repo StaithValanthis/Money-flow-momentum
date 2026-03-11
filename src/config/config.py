@@ -1,37 +1,45 @@
 """Configuration loading and validation using Pydantic."""
 
 from pathlib import Path
-from typing import Optional
-
-import yaml
-from dotenv import load_dotenv
-from pydantic import BaseModel, Field
-from pydantic_settings import BaseSettings
-
-from src.utils.logging import get_logger
-
-load_dotenv()
-
-logger = get_logger(__name__)
-
-
-"""Configuration loading and validation using Pydantic."""
-
-from pathlib import Path
 from typing import Optional, Literal
 
 import yaml
-from dotenv import load_dotenv
+from dotenv import load_dotenv, dotenv_values
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
 
 from src.utils.logging import get_logger
 
+# Load default .env only when no instance-specific env is used (see load_config)
 load_dotenv()
 
 logger = get_logger(__name__)
 
+OperatingModeType = Literal["demo_research", "live_guarded"]
+OPERATING_MODE_DEMO_RESEARCH: OperatingModeType = "demo_research"
+OPERATING_MODE_LIVE_GUARDED: OperatingModeType = "live_guarded"
 BybitEnvType = Literal["demo", "live", "testnet"]
+
+# Canonical instance names for dual-instance operation
+INSTANCE_DEMO = "demo"
+INSTANCE_LIVE = "live"
+
+
+def instance_from_config_path(config_path: Optional[Path]) -> Optional[str]:
+    """
+    Derive instance name from config file path for dual-instance isolation.
+    config.config.demo.yaml / config.demo.yaml -> demo
+    config.config.live.yaml / config.live.yaml -> live
+    """
+    if not config_path:
+        return None
+    path = Path(config_path)
+    name = path.name.lower()
+    if ".demo." in name or name == "config.demo.yaml" or name.endswith(".demo.yaml"):
+        return INSTANCE_DEMO
+    if ".live." in name or name == "config.live.yaml" or name.endswith(".live.yaml"):
+        return INSTANCE_LIVE
+    return None
 
 
 class EnvSettings(BaseSettings):
@@ -61,6 +69,32 @@ class EnvSettings(BaseSettings):
     }
 
 
+def _env_settings_from_file(env_file_path: Path) -> EnvSettings:
+    """
+    Build EnvSettings from a single file only (no os.environ merge).
+    Use when env_file_path is explicitly provided (e.g. tests, promote-env) so
+    the file is the single source of truth.
+    """
+    raw = dotenv_values(env_file_path, encoding="utf-8") or {}
+    def s(key: str) -> str:
+        return (raw.get(key) or "").strip()
+    def b(key: str) -> bool:
+        v = (raw.get(key) or "").strip().lower()
+        return v in ("1", "true", "yes")
+    return EnvSettings(
+        bybit_env=s("BYBIT_ENV") or "demo",
+        bybit_api_key=s("BYBIT_API_KEY"),
+        bybit_api_secret=s("BYBIT_API_SECRET"),
+        bybit_testnet=b("BYBIT_TESTNET") if "BYBIT_TESTNET" in raw else True,
+        bybit_demo_api_key=s("BYBIT_DEMO_API_KEY"),
+        bybit_demo_api_secret=s("BYBIT_DEMO_API_SECRET"),
+        bybit_live_api_key=s("BYBIT_LIVE_API_KEY"),
+        bybit_live_api_secret=s("BYBIT_LIVE_API_SECRET"),
+        bybit_testnet_api_key=s("BYBIT_TESTNET_API_KEY"),
+        bybit_testnet_api_secret=s("BYBIT_TESTNET_API_SECRET"),
+    )
+
+
 def get_bybit_env(env: EnvSettings) -> BybitEnvType:
     """Resolve effective environment: BYBIT_ENV if set, else BYBIT_TESTNET -> testnet/live."""
     e = (getattr(env, "bybit_env", "") or "").strip().lower()
@@ -71,7 +105,7 @@ def get_bybit_env(env: EnvSettings) -> BybitEnvType:
     return "live"
 
 
-def resolve_bybit_credentials(env: EnvSettings, env_type: Optional[BybitEnvType] = None) -> tuple[str, str, bool, BybitEnvType]:
+def resolve_bybit_credentials(env: "EnvSettings", env_type: Optional[BybitEnvType] = None) -> tuple[str, str, bool, BybitEnvType]:
     """
     Resolve effective Bybit API key and secret for the given environment.
     env_type: demo | live | testnet. If None, uses get_bybit_env(env).
@@ -293,6 +327,15 @@ class LoggingConfig(BaseModel):
 class Config(BaseModel):
     """Main application configuration."""
 
+    operating_mode: Optional[Literal["demo_research", "live_guarded"]] = Field(
+        default=None,
+        description="Top-level mode: demo_research (autonomous Demo) or live_guarded (guarded Live). If unset, derived from env/automation/burn_in.",
+    )
+    # Dual-instance: instance_name scopes DB, artifacts, logs when set (demo | live)
+    instance_name: Optional[str] = Field(
+        default=None,
+        description="Instance identity for dual-instance operation: 'demo' or 'live'. Derived from config path if not set.",
+    )
     mode: str = Field(default="paper", pattern="^(dry_run|paper|live)$")
     dry_run: bool = False
     # demo_mode: deprecated for execution; do not set from mode=paper. Use dry_run to control simulated vs real orders.
@@ -310,6 +353,9 @@ class Config(BaseModel):
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     portfolio_exposure: PortfolioExposureConfig = Field(default_factory=PortfolioExposureConfig)
     database_path: str = "data/bot.db"
+    # Instance-scoped roots (set by load_config when instance_name is set)
+    artifacts_root: str = "artifacts"
+    logs_dir: str = "logs"
     scan_interval_seconds: float = 5.0
     score_interval_seconds: float = Field(default=5.0, ge=1)
     health_check_interval_seconds: float = 30.0
@@ -339,25 +385,125 @@ class Config(BaseModel):
     runner_trailing_enabled: bool = True
 
 
-def load_config(config_path: Optional[Path] = None) -> tuple[Config, EnvSettings]:
-    """Load configuration from YAML and .env."""
+def get_effective_operating_mode(config: Config, env: EnvSettings) -> OperatingModeType:
+    """Return the effective operating mode (explicit or derived). Used for display and branching."""
+    if config.operating_mode is not None:
+        return config.operating_mode
+    env_t = get_bybit_env(env)
+    if env_t == "live":
+        return OPERATING_MODE_LIVE_GUARDED
+    if env_t == "demo":
+        auto = getattr(config, "automation", None)
+        burn = getattr(config, "burn_in", None)
+        if (
+            auto
+            and getattr(auto, "enabled", False)
+            and getattr(auto, "demo_orchestration_enabled", False)
+            and burn
+            and getattr(burn, "burn_in_enabled", False)
+            and (getattr(burn, "burn_in_phase", "") or "") == "demo"
+        ):
+            return OPERATING_MODE_DEMO_RESEARCH
+    return OPERATING_MODE_LIVE_GUARDED
+
+
+def normalize_operating_mode(config: Config, env: EnvSettings) -> None:
+    """
+    Apply operating mode semantics. If operating_mode is set explicitly, derive burn_in and automation
+    to match. If unset, infer mode from env/automation/burn_in and set it on config for display.
+    """
+    effective = get_effective_operating_mode(config, env)
+    if config.operating_mode is not None:
+        if config.operating_mode == OPERATING_MODE_DEMO_RESEARCH:
+            config.burn_in.burn_in_enabled = True
+            config.burn_in.burn_in_phase = "demo"
+            config.burn_in.burn_in_max_trades_per_day = max(
+                config.burn_in.burn_in_max_trades_per_day, 200
+            )
+            config.burn_in.burn_in_max_notional_usdt = max(
+                config.burn_in.burn_in_max_notional_usdt, 500_000.0
+            )
+            config.automation.enabled = True
+            config.automation.demo_orchestration_enabled = True
+            config.automation.auto_start_shadow_for_best_candidate = True
+        else:
+            # live_guarded: stricter effective profile than demo_research
+            config.burn_in.burn_in_phase = "live_guarded"
+            config.automation.demo_orchestration_enabled = False
+            # Apply stricter burn-in caps only when current values are permissive (>= demo defaults)
+            if config.burn_in.burn_in_max_trades_per_day >= 200:
+                config.burn_in.burn_in_max_trades_per_day = min(
+                    config.burn_in.burn_in_max_trades_per_day, 50
+                )
+            if config.burn_in.burn_in_max_notional_usdt >= 500_000.0:
+                config.burn_in.burn_in_max_notional_usdt = min(
+                    config.burn_in.burn_in_max_notional_usdt, 20_000.0
+                )
+    config.operating_mode = effective
+
+
+def load_config(
+    config_path: Optional[Path] = None,
+    env_file_path: Optional[Path] = None,
+) -> tuple[Config, EnvSettings]:
+    """Load configuration from YAML and env. For dual-instance, use config.config.demo.yaml or config.config.live.yaml."""
     config_path = config_path or Path("config/config.yaml")
-    env = EnvSettings()
+    # Derive instance from path for dual-instance path scoping
+    instance = instance_from_config_path(config_path)
+    # Load env: explicit file, else .env.{instance}, else .env (override so per-call env wins)
+    if env_file_path is not None and Path(env_file_path).exists():
+        env = _env_settings_from_file(Path(env_file_path))
+    elif env_file_path is not None:
+        # Explicit path given but missing: fall back to normal load
+        if instance:
+            load_dotenv(Path(f".env.{instance}"), override=True)
+        else:
+            load_dotenv(Path(".env"), override=True)
+        env = EnvSettings()
+    elif instance:
+        load_dotenv(Path(f".env.{instance}"), override=True)
+        env = EnvSettings()
+    else:
+        load_dotenv(Path(".env"), override=True)
+        env = EnvSettings()
 
     if not config_path.exists():
         logger.warning(f"Config file not found: {config_path}, using defaults")
-        return Config(), env
+        config = Config()
+        if instance:
+            config.instance_name = instance
+            config.artifacts_root = f"artifacts/{instance}"
+            config.logs_dir = f"logs/{instance}"
+            config.database_path = f"data/{instance}/bot.db"
+        normalize_operating_mode(config, env)
+        return config, env
 
     with open(config_path, encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
 
-    # Override exchange testnet from env: only true when env is testnet (demo and live use mainnet endpoints)
+    # Explicit instance_name in YAML overrides path-based derivation
+    if data.get("instance_name") in ("demo", "live"):
+        instance = data["instance_name"]
+    data.setdefault("operating_mode", None)
+    if data.get("operating_mode") not in ("demo_research", "live_guarded"):
+        data["operating_mode"] = None
+
+    # Override exchange testnet from env
     data.setdefault("exchange", {})
     data["exchange"]["testnet"] = get_bybit_env(env) == "testnet"
 
     config = Config.model_validate(data)
     if config.mode == "dry_run":
         config.dry_run = True
-    # Do NOT set demo_mode from mode=paper. dry_run is the single control for "simulate entries only".
-    # mode=paper with dry_run=False => real orders on selected env (Demo/Live); mode=dry_run => simulate only.
+    normalize_operating_mode(config, env)
+
+    # Apply instance-scoped paths when instance is set (from path or YAML)
+    if instance:
+        config.instance_name = instance
+        if config.artifacts_root == "artifacts":
+            config.artifacts_root = f"artifacts/{instance}"
+        if config.logs_dir == "logs":
+            config.logs_dir = f"logs/{instance}"
+        if config.database_path == "data/bot.db":
+            config.database_path = f"data/{instance}/bot.db"
     return config, env

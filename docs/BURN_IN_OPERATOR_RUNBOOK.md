@@ -1,6 +1,15 @@
 # Burn-in Operator Runbook
 
-Step-by-step operator workflow for Ubuntu CLI: install, validate, **demo burn-in** (Bybit Demo Trading), small-live readiness, guarded live start, and incident stop/rollback.
+Step-by-step operator workflow for Ubuntu CLI. The repo operates in two **canonical modes**:
+
+- **`demo_research`** — Autonomous Demo research/tuning (BYBIT_ENV=demo, burn_in_phase: demo). Use for burn-in and optimization on Bybit Demo Trading.
+- **`live_guarded`** — Guarded live trading (BYBIT_ENV=live). Stricter effective profile; manual approval required for config promotion and Demo→Live.
+
+Set `operating_mode: demo_research` or `operating_mode: live_guarded` in config. Validation and scripts report readiness in terms of these modes.
+
+**Dual-instance (recommended):** Run Demo and Live **simultaneously** on one host with full isolation. Use `config/config.demo.yaml` + `.env.demo` for the Demo instance and `config/config.live.yaml` + `.env.live` for the Live instance. Paths (DB, artifacts, logs, heartbeat) are then scoped per instance (`data/demo/bot.db`, `artifacts/demo/`, `logs/demo/` and `data/live/bot.db`, `artifacts/live/`, `logs/live/`). Only the Demo instance runs the automation timer; promotion remains manual. See [docs/INSTALL_AND_RUN_GUIDE.md](INSTALL_AND_RUN_GUIDE.md) for dual-instance commands.
+
+Workflow: install → validate → **demo_research** (start Demo, check burn-in, readiness) → when ready, **promote environment** (Demo→Live) and **live_guarded** (check small-live readiness, start guarded live) → incident stop/rollback as needed.
 
 **Canonical reference:** For a single consolidated install and run sequence, see **[docs/INSTALL_AND_RUN_GUIDE.md](INSTALL_AND_RUN_GUIDE.md)**.
 
@@ -67,7 +76,7 @@ Or:
 ./scripts/validate_env.sh
 ```
 
-Validation checks: config exists and loads, `.env` present for paper/live, DB and artifact dirs writable, mode/env consistency (BYBIT_ENV), active strategy in registry. Exits 1 on errors; warnings are printed but do not fail.
+Validation checks: config exists and loads, `.env` present for paper/live, DB and artifact dirs writable, mode/env consistency (BYBIT_ENV), active strategy in registry. On success, prints **operating_mode** and a mode-ready message (ready for **demo_research** or **live_guarded**). Exits 1 on errors; warnings are printed but do not fail.
 
 ---
 
@@ -94,9 +103,9 @@ sudo systemctl start money-flow-momentum-automation.timer
 
 ---
 
-## 5. Demo burn-in start (recommended)
+## 5. Demo research start (demo_research)
 
-1. Set in config: `burn_in_enabled: true`, `burn_in_phase: demo`, `dry_run: false` (for real Demo orders; bootstrap sets this when you choose demo), and **demo** keys in `.env`: `BYBIT_ENV=demo`, `BYBIT_DEMO_API_KEY`, `BYBIT_DEMO_API_SECRET` (create from mainnet account → Demo Trading; do not use testnet for demo).
+1. Set in config: `operating_mode: demo_research` (or leave unset with burn_in_phase: demo), `burn_in_enabled: true`, `burn_in_phase: demo`, `dry_run: false` (for real Demo orders; bootstrap sets this when you choose demo), and **demo** keys in `.env`: `BYBIT_ENV=demo`, `BYBIT_DEMO_API_KEY`, `BYBIT_DEMO_API_SECRET` (create from mainnet account → Demo Trading; do not use testnet for demo).
 2. Run:
 
 ```bash
@@ -108,7 +117,7 @@ With options:
 - `--no-backup` — skip config backup before start
 - `--foreground` — run bot in foreground instead of starting systemd
 
-Script will: validate env, confirm burn-in phase=demo (or testnet for legacy) and BYBIT_ENV match, optionally back up config, start service (or run in foreground), then print monitor commands. **Demo** uses REST `https://api-demo.bybit.com`, private WS `wss://stream-demo.bybit.com`, and **mainnet public** market data `wss://stream.bybit.com` (per Bybit docs).
+Script will: validate env, confirm operating_mode and burn-in phase (demo or testnet) and BYBIT_ENV match, optionally back up config, start service (or run in foreground), then print monitor commands. **Demo** uses REST `https://api-demo.bybit.com`, private WS `wss://stream-demo.bybit.com`, and **mainnet public** market data `wss://stream.bybit.com` (per Bybit docs).
 
 **Monitor commands (printed by script):**
 
@@ -154,9 +163,9 @@ Readiness artifacts: `artifacts/burnin/readiness_*.json`, `readiness_*.md`.
 
 ---
 
-## 8. Small-live readiness check (go/no-go)
+## 8. Guarded live (live_guarded) readiness check (go/no-go)
 
-**Do not** auto-switch phase. Operator must set `burn_in_phase: live_small` in config **and** `BYBIT_ENV=live` in `.env` when ready.
+**Do not** auto-switch. Operator must set `operating_mode: live_guarded` in config (and optionally `burn_in_phase: live_small` or leave phase as `live_guarded`) **and** `BYBIT_ENV=live` in `.env` when ready.
 
 ```bash
 ./scripts/check_small_live_ready.sh
@@ -164,18 +173,18 @@ Readiness artifacts: `artifacts/burnin/readiness_*.json`, `readiness_*.md`.
 
 Script checks:
 
-- `burn_in_phase` is `live_small` (fails if not set by operator)
+- `operating_mode` is `live_guarded` (fails if not set by operator)
 - `BYBIT_ENV=live` and live keys present
 - Runs burn-in readiness and report
 - Produces **GO** or **NO-GO** summary
 
-If GO, proceed to guarded small-live start. If NO-GO, fix phase, readiness, or critical burn-in issues first.
+If GO, proceed to guarded live start. If NO-GO, fix operating_mode, phase, readiness, or critical burn-in issues first.
 
 ---
 
-## 8a. Promote environment (Demo -> Live) — safe helper
+## 8a. Promote environment (demo_research → live_guarded) — safe helper
 
-After demo burn-in and readiness passes, use the **promote-environment** helper to switch from Demo to Live. It does **not** auto-promote: you must run with `--confirm-live` to apply.
+After demo run and readiness passes, use the **promote-environment** helper to switch from Demo to Live. It does **not** auto-promote: you must run with `--confirm-live` to apply.
 
 **Preview (default):** Shows current environment, readiness, live credentials, and what would change. No files are modified.
 
@@ -210,7 +219,7 @@ python run_bot.py promote-env --confirm-live --start-live
 
 - Backs up `.env` and `config/config.yaml` (unless `--no-backup`).
 - Sets `BYBIT_ENV=live` in `.env`.
-- Sets `burn_in_phase: live_small` in config.
+- Sets `burn_in_phase: live_small` in config (and you should set `operating_mode: live_guarded` for mode-first operation).
 
 **Artifact:** Each promotion is recorded under `artifacts/validation/env_promotion_<timestamp>.json` and `.md` (timestamp, previous/new env and phase, files changed, backups).
 
@@ -218,9 +227,9 @@ python run_bot.py promote-env --confirm-live --start-live
 
 ---
 
-## 9. Guarded small-live start
+## 9. Guarded live start (live_guarded)
 
-1. In config: `burn_in_enabled: true`, `burn_in_phase: live_small`. In `.env`: `BYBIT_ENV=live`, `BYBIT_LIVE_API_KEY`, `BYBIT_LIVE_API_SECRET`.
+1. In config: `operating_mode: live_guarded`, `burn_in_enabled: true`, `burn_in_phase: live_guarded` or `live_small`. In `.env`: `BYBIT_ENV=live`, `BYBIT_LIVE_API_KEY`, `BYBIT_LIVE_API_SECRET`.
 2. Start:
 
 ```bash
@@ -229,7 +238,7 @@ python run_bot.py promote-env --confirm-live --start-live
 
 Use `--foreground` to run in foreground instead of systemd.
 
-Script validates env, burn-in phase and keys, then starts the service and prints post-start verification commands.
+Script validates env, operating_mode=live_guarded, burn-in phase and keys, then starts the service and prints post-start verification commands.
 
 **Post-start verification:**
 
@@ -265,15 +274,15 @@ Runs `python run_bot.py config rollback --reason "reason text"` after stop. Does
 
 ## 11. Where artifacts and logs live
 
-| Item | Location |
-|------|----------|
-| Bot log (systemd) | `logs/bot.log` |
-| Heartbeat | `artifacts/heartbeat.json` |
-| Burn-in readiness | `artifacts/burnin/readiness_*.json`, `readiness_*.md` |
-| **Environment promotion** | `artifacts/validation/env_promotion_<ts>.json`, `env_promotion_<ts>.md` |
-| Burn-in bundle | `artifacts/burnin/bundle_<ts>/` (from `generate_burnin_bundle.sh`) |
-| Config backups | `artifacts/validation/` or `artifacts/validation/backups/<ts>/` with `--timestamp` |
-| DB | `data/bot.db` (or `database_path` in config) |
+| Item | Single | Demo (dual) | Live (dual) |
+|------|--------|-------------|-------------|
+| Bot log (systemd) | `logs/bot.log` | `logs/demo/` | `logs/live/` |
+| Heartbeat | `artifacts/heartbeat.json` | `artifacts/demo/heartbeat.json` | `artifacts/live/heartbeat.json` |
+| Burn-in readiness | `artifacts/burnin/` | `artifacts/demo/burnin/` | `artifacts/live/burnin/` |
+| **Environment promotion** | `artifacts/validation/` | `artifacts/demo/validation/` | `artifacts/live/validation/` |
+| Burn-in bundle | `artifacts/burnin/bundle_<ts>/` | `artifacts/demo/burnin/bundle_<ts>/` | — |
+| Config backups | `artifacts/validation/` | `artifacts/demo/validation/` | `artifacts/live/validation/` |
+| DB | `data/bot.db` | `data/demo/bot.db` | `data/live/bot.db` |
 
 ---
 
@@ -344,8 +353,11 @@ After demo or small-live run, use Stage 3 CLI for evaluation, optimization, shad
   `python run_bot.py shadow report <candidate_config_id>`
 
 - **Promote / rollback:**  
-  `python run_bot.py promote --config-id <id>`  
+  `python run_bot.py promote --config-id <id>` (activate within same instance)  
   `python run_bot.py promote status`  
+  **Cross-instance (Demo candidate → Live):**  
+  `python run_bot.py promote-to-live --candidate-config-id <id> --demo-config config/config.demo.yaml --live-config config/config.live.yaml` (import only); add `--activate` to make it active in Live.  
+  `python run_bot.py config show --config-id <live_id> --config config/config.live.yaml` (inspect imported config)  
   `python run_bot.py config rollback [--reason "reason"]`
 
 - **Demo automation (optional):**  
@@ -360,23 +372,28 @@ After demo or small-live run, use Stage 3 CLI for evaluation, optimization, shad
 | Action | Command |
 |--------|---------|
 | Install | `./install.sh` |
-| Validate | `source venv/bin/activate && python run_bot.py validate` or `./scripts/validate_env.sh` |
-| Show runtime mode | `python run_bot.py show-runtime-mode` |
-| **Preview promote Demo -> Live** | `python run_bot.py promote-env` or `./scripts/promote_demo_to_live.sh` |
-| **Confirm promote Demo -> Live** | `python run_bot.py promote-env --confirm-live` |
-| Start demo burn-in | `./scripts/start_testnet_burnin.sh` (requires BYBIT_ENV=demo, burn_in_phase: demo) |
+| Validate (single) | `source venv/bin/activate && python run_bot.py validate` or `./scripts/validate_env.sh` |
+| Validate (dual) | `python run_bot.py validate --config config/config.demo.yaml` / `--config config/config.live.yaml` |
+| Show runtime mode | `python run_bot.py show-runtime-mode` (add `--config config/config.demo.yaml` or `config/config.live.yaml` for dual) |
+| **Preview promote Demo → Live** | `python run_bot.py promote-env` or `./scripts/promote_demo_to_live.sh` (dual: `--config config/config.live.yaml --env .env.live`) |
+| **Confirm promote Demo → Live** | `python run_bot.py promote-env --confirm-live` (dual: add `--config config/config.live.yaml --env .env.live`) |
+| Start demo research | `./scripts/start_testnet_burnin.sh` or `./scripts/start_demo_research.sh` (dual) |
+| Start guarded live | `./scripts/start_small_live.sh` or `./scripts/start_live_guarded.sh` (dual) |
 | Check burn-in | `./scripts/check_burnin.sh` |
-| Small-live readiness | `./scripts/check_small_live_ready.sh` |
-| Start guarded live | `./scripts/start_small_live.sh` |
+| Status (dual) | `./scripts/status_demo.sh`, `./scripts/status_live.sh` |
+| Tail logs (dual) | `./scripts/tail_logs.sh demo [lines]`, `./scripts/tail_logs.sh live [lines]` |
+| Guarded live readiness | `./scripts/check_small_live_ready.sh` (optional: config path for dual) |
 | Stop / inspect | `./scripts/incident_stop.sh` |
 | Stop + rollback | `./scripts/incident_stop.sh --rollback "reason"` |
-| Run evaluation | `python run_bot.py evaluate [--from-date YYYY-MM-DD] [--to-date YYYY-MM-DD]` |
+| Run evaluation | `python run_bot.py evaluate [--from-date YYYY-MM-DD] [--to-date YYYY-MM-DD]` (use `--config` for dual) |
 | Run optimizer | `python run_bot.py optimize run [--config-id <id>]` |
 | Shadow report | `python run_bot.py shadow report <candidate_config_id>` |
-| Promote config | `python run_bot.py promote --config-id <id>` |
+| Promote config | `python run_bot.py promote --config-id <id>` (within instance) |
+| **Import Demo candidate to Live** | `python run_bot.py promote-to-live --candidate-config-id <id> --demo-config config/config.demo.yaml --live-config config/config.live.yaml` |
+| **Activate imported config in Live** | `python run_bot.py promote-to-live ... --activate` or `python run_bot.py promote --config-id <live_id> --config config/config.live.yaml` |
 | Rollback config | `python run_bot.py config rollback [--reason "reason"]` |
-| Enable automation timer | `sudo systemctl enable money-flow-momentum-automation.timer && sudo systemctl start money-flow-momentum-automation.timer` |
-| Disable automation timer | `sudo systemctl stop money-flow-momentum-automation.timer && sudo systemctl disable money-flow-momentum-automation.timer` |
-| Automation status | `./scripts/automation_status.sh` or `python run_bot.py automation status` |
+| Enable automation timer | `sudo systemctl enable money-flow-momentum-automation.timer && sudo systemctl start ...` (single) or `money-flow-momentum-demo-automation.timer` (dual) |
+| Disable automation timer | `sudo systemctl stop ... && sudo systemctl disable ...` |
+| Automation status | `./scripts/automation_status.sh` or `python run_bot.py automation status` (point at demo when dual) |
 
 See **docs/BURN_IN_AND_LIVE_VALIDATION.md** for burn-in semantics and **docs/DEPLOYMENT_AND_HEALTHCHECKS.md** for health/status/report details.

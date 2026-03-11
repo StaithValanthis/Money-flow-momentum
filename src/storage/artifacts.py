@@ -50,7 +50,8 @@ def automation_dir(base: Optional[Path] = None) -> Path:
 
 
 def ensure_artifact_dirs(base: Optional[Path] = None) -> None:
-    """Create standard artifact directories."""
+    """Create standard artifact directories. Pass config.artifacts_root for instance-scoped dirs."""
+    base = Path(base) if base is not None else None
     for d in (
         evaluations_dir(base),
         optimizations_dir(base),

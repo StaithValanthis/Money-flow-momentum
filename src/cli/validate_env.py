@@ -14,6 +14,7 @@ class ValidationResult:
     ok: bool
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    operating_mode: Optional[str] = None  # effective mode when ok: demo_research | live_guarded
 
 
 def _has_dual_key_demo(env: "EnvSettings") -> bool:
@@ -35,10 +36,12 @@ def _has_legacy_keys(env: "EnvSettings") -> bool:
 def validate_environment(
     config_path: Optional[Path] = None,
     require_api_keys_for_live: bool = True,
+    env_file_path: Optional[Path] = None,
 ) -> ValidationResult:
     """
     Check config exists, .env if needed, dirs writable, mode/env consistency,
     active strategy in registry. Validates dual-key or legacy credentials for selected env (demo/live/testnet).
+    When env_file_path is provided, that file is used for env loading (e.g. in tests).
     """
     errors: list[str] = []
     warnings: list[str] = []
@@ -49,14 +52,15 @@ def validate_environment(
         return ValidationResult(ok=False, errors=errors, warnings=warnings)
 
     try:
-        from src.config.config import load_config, resolve_bybit_credentials, get_bybit_env
-        config, env = load_config(cfg_path)
+        from src.config.config import load_config, resolve_bybit_credentials, get_bybit_env, get_effective_operating_mode
+        config, env = load_config(cfg_path, env_file_path=env_file_path)
         env_type = get_bybit_env(env)
+        operating_mode = get_effective_operating_mode(config, env)
     except Exception as e:
         errors.append(f"Config load failed: {e}")
         return ValidationResult(ok=False, errors=errors, warnings=warnings)
 
-    env_path = Path(".env")
+    env_path = Path(env_file_path) if env_file_path else Path(".env")
     if not env_path.exists():
         if config.mode in ("paper", "live") and require_api_keys_for_live:
             errors.append(".env not found. Run: python bootstrap_config.py")
@@ -83,7 +87,7 @@ def validate_environment(
                 if env_type == "testnet":
                     warnings.append("BYBIT_ENV=testnet is legacy. Recommend BYBIT_ENV=demo for burn-in (Bybit Demo Trading).")
 
-    # DB and artifact dirs
+    # DB and artifact dirs (instance-scoped when config.instance_name is set)
     db_path = Path(config.database_path)
     db_dir = db_path.parent
     try:
@@ -97,14 +101,15 @@ def validate_environment(
         except OSError as e:
             errors.append(f"DB directory not writable: {db_dir} - {e}")
 
-    for name in ("artifacts", "artifacts/burnin", "artifacts/validation", "logs"):
-        p = Path(name)
+    art_root = Path(config.artifacts_root)
+    logs_dir = Path(config.logs_dir)
+    for p in (art_root, art_root / "burnin", art_root / "validation", logs_dir):
         try:
             p.mkdir(parents=True, exist_ok=True)
             (p / ".write_check").write_text("")
             (p / ".write_check").unlink()
         except OSError as e:
-            errors.append(f"Directory not writable: {name} - {e}")
+            errors.append(f"Directory not writable: {p} - {e}")
 
     # Mode / env consistency
     testnet_cfg = getattr(config.exchange, "testnet", True)
@@ -115,6 +120,12 @@ def validate_environment(
 
     if config.mode == "live" and env_type == "demo":
         warnings.append("mode is 'live' but BYBIT_ENV=demo. For guarded live set BYBIT_ENV=live and live keys.")
+
+    # Mode/env consistency: operating_mode should match BYBIT_ENV
+    if operating_mode == "live_guarded" and env_type != "live":
+        warnings.append("operating_mode is live_guarded but BYBIT_ENV is %s. For guarded live set BYBIT_ENV=live." % env_type)
+    if operating_mode == "demo_research" and env_type not in ("demo", "testnet"):
+        warnings.append("operating_mode is demo_research but BYBIT_ENV is %s. For autonomous Demo set BYBIT_ENV=demo." % env_type)
 
     burn_in = getattr(config, "burn_in", None)
     if burn_in and getattr(burn_in, "burn_in_enabled", False):
@@ -138,4 +149,9 @@ def validate_environment(
     except Exception as e:
         errors.append(f"Strategy registry check: {e}")
 
-    return ValidationResult(ok=len(errors) == 0, errors=errors, warnings=warnings)
+    return ValidationResult(
+        ok=len(errors) == 0,
+        errors=errors,
+        warnings=warnings,
+        operating_mode=operating_mode if len(errors) == 0 else None,
+    )

@@ -1,0 +1,25 @@
+# Demo research instance: operating_mode=demo_research, BYBIT_ENV=demo
+# Uses config/config.demo.yaml, .env.demo, data/demo/, artifacts/demo/, logs/demo/
+# Run simultaneously with money-flow-momentum-live.service on the same host.
+[Unit]
+Description=Money Flow Momentum - Demo research instance (Bybit Demo Trading)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=REPO_USER
+Group=REPO_GROUP
+WorkingDirectory=REPO_ROOT
+ExecStart=REPO_ROOT/venv/bin/python run_bot.py run --config config/config.demo.yaml
+Restart=on-failure
+RestartSec=10
+Environment=PATH=REPO_ROOT/venv/bin
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-REPO_ROOT/.env.demo
+
+StandardOutput=append:REPO_ROOT/logs/demo/bot.log
+StandardError=append:REPO_ROOT/logs/demo/bot.log
+
+[Install]
+WantedBy=multi-user.target

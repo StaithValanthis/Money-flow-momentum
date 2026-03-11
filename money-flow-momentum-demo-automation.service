@@ -1,0 +1,23 @@
+# Demo automation: runs "automation cycle" for Demo instance only.
+# Uses config/config.demo.yaml and .env.demo. Does NOT start the trading bot.
+[Unit]
+Description=Money Flow Momentum - Demo automation cycle (one-shot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=REPO_USER
+Group=REPO_GROUP
+WorkingDirectory=REPO_ROOT
+ExecStart=REPO_ROOT/venv/bin/python run_bot.py automation cycle --config config/config.demo.yaml
+Environment=PATH=REPO_ROOT/venv/bin
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-REPO_ROOT/.env.demo
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=money-flow-momentum-demo-automation
+
+[Install]
+WantedBy=multi-user.target

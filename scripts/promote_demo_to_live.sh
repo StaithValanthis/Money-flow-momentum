@@ -1,5 +1,5 @@
 #!/bin/bash
-# Safe promote environment: Demo -> guarded Live.
+# Promote environment: demo_research → live_guarded (Demo → Live). Safe wrapper around promote-env.
 # Runs Python promote-env (preview by default). Use --confirm-live to apply; optionally --start-live.
 # Usage: ./scripts/promote_demo_to_live.sh [--confirm-live] [--start-live] [--reason "reason"]
 # Example preview:  ./scripts/promote_demo_to_live.sh

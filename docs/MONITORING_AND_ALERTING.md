@@ -10,7 +10,7 @@
 
 - **Written by the bot**: The main score/entry loop calls `write_heartbeat(health, Path("artifacts/heartbeat.json"))` about every 30 seconds. Before that, each loop (context refresh, WS monitor, reconciliation, lifecycle, degradation check, score_entry) calls `report_ok(...)` so the file contains real loop timestamps.
 - **read_heartbeat(path)**: Returns last snapshot dict or None.
-- **CLI `health`**: Reads the heartbeat; reports per-loop age; marks loops **stale** when last_ok_ts is older than `--stale-sec` (default 300); exits 1 if heartbeat missing or any loop stale/fail. Use `--heartbeat path` to override file location.
+- **CLI `health`**: Reads the heartbeat; reports per-loop age; marks loops **stale** when last_ok_ts is older than `--stale-sec` (default 300); exits 1 if heartbeat missing or any loop stale/fail. Use `--heartbeat path` to override file location. The **degradation_monitor** loop runs on a slower cadence and uses a 900s stale threshold so health does not false-fail when other loops are fresh.
 - **CLI `status`**: Shows heartbeat file age and per-loop freshness when the file exists; otherwise reports "No heartbeat file (runtime state unknown)".
 - **CLI `report`**: Includes loop health / stale summary from heartbeat; if no file, states "No heartbeat file; runtime loop state unknown."
 

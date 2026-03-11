@@ -1,0 +1,13 @@
+# Run Demo automation cycle every 15 minutes (Demo instance only).
+[Unit]
+Description=Money Flow Momentum - Demo automation timer
+Documentation=Run "python run_bot.py automation cycle --config config/config.demo.yaml" every 15 min.
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+Persistent=true
+Unit=money-flow-momentum-demo-automation.service
+
+[Install]
+WantedBy=timers.target

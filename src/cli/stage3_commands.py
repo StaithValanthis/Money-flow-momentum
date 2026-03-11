@@ -15,6 +15,7 @@ from src.config.versioning import (
     activate_config_version,
     rollback_to_previous_config,
     diff_config_versions,
+    import_candidate_to_live,
 )
 from src.evaluation.evaluator import Evaluator
 from src.optimizer.search import run_optimization
@@ -35,6 +36,11 @@ from src.validation.readiness import (
 def _db_path(config_path: Optional[Path] = None) -> str:
     config, _ = load_config(config_path)
     return config.database_path
+
+
+def _load_config_env(config_path: Optional[Path] = None) -> tuple[Any, Any]:
+    """Load config and env for CLI commands that need artifact paths."""
+    return load_config(config_path)
 
 
 def _parse_date_range(from_date: Optional[str], to_date: Optional[str]) -> tuple[Optional[int], Optional[int]]:
@@ -89,9 +95,10 @@ def run_post_burnin_pipeline(
     summary["to_ts"] = to_ts
 
     db = Database(db_path)
+    art_root = Path(config.artifacts_root)
+    hb_path = art_root / "heartbeat.json"
+    burnin_out = art_root / "burnin"
     try:
-        # 1) Readiness
-        hb_path = Path("artifacts/heartbeat.json")
         burn = getattr(config, "burn_in", None)
         phase = getattr(burn, "burn_in_phase", "demo") if burn else "demo"
         readiness: ReadinessResult = compute_readiness(
@@ -113,7 +120,7 @@ def run_post_burnin_pipeline(
         if not acceptable:
             # Stop early; tell operator what to review.
             next_cmds.append("python run_bot.py burnin report --window %.1f" % window_hours)
-            next_cmds.append("python run_bot.py burnin readiness --window %.1f --output artifacts/burnin" % window_hours)
+            next_cmds.append("python run_bot.py burnin readiness --window %.1f --output %s" % (window_hours, burnin_out))
             summary["evaluation"] = None
             summary["optimizer"] = None
             summary["candidates"] = None
@@ -425,7 +432,12 @@ def register_stage3_cli(app: typer.Typer) -> None:
             typer.echo(f"WARN: {w}")
         if result.ok:
             typer.echo("Validation OK.")
-            typer.echo("Ready for: demo burn-in (BYBIT_ENV=demo, burn_in_enabled: true, burn_in_phase: demo). For guarded small-live: set phase: live_small and BYBIT_ENV=live; then ./scripts/check_small_live_ready.sh")
+            mode = getattr(result, "operating_mode", None) or "live_guarded"
+            typer.echo(f"operating_mode: {mode}")
+            if mode == "demo_research":
+                typer.echo("Ready for autonomous Demo research (demo_research). Start with: ./scripts/start_testnet_burnin.sh")
+            else:
+                typer.echo("Ready for guarded live trading (live_guarded). Manual approval required for config promotion and Demo→Live. Start with: ./scripts/check_small_live_ready.sh then ./scripts/start_small_live.sh")
             raise typer.Exit(0)
         typer.echo("Validation failed.")
         raise typer.Exit(1)
@@ -454,16 +466,18 @@ def register_stage3_cli(app: typer.Typer) -> None:
         symbol: Optional[str] = typer.Option(None, "--symbol"),
         config_path: Optional[Path] = typer.Option(None, "--config", "-c"),
     ) -> None:
-        """Run evaluation report. Writes artifacts to artifacts/evaluations/."""
-        db_path = _db_path(config_path)
+        """Run evaluation report. Writes artifacts to config-scoped artifacts/evaluations/."""
+        config, _ = load_config(config_path)
+        db_path = config.database_path
         from_ts = None
         to_ts = None
         if from_date:
             from_ts = int(time.mktime(time.strptime(from_date, "%Y-%m-%d"))) * 1000
         if to_date:
             to_ts = int(time.mktime(time.strptime(to_date, "%Y-%m-%d"))) * 1000 + 86400 * 1000 - 1
+        artifact_dir = Path(config.artifacts_root) / "evaluations"
         ev = Evaluator(db_path)
-        summary = ev.run(from_ts=from_ts, to_ts=to_ts, config_id=config_id, symbol=symbol)
+        summary = ev.run(from_ts=from_ts, to_ts=to_ts, config_id=config_id, symbol=symbol, artifact_dir=artifact_dir)
         typer.echo(f"Run ID: {summary.get('run_id')}  Report: {summary.get('report_path')}")
         if summary.get("trade_count", 0) == 0:
             typer.echo("No trades in window; report reflects empty metrics.")
@@ -507,6 +521,8 @@ def register_stage3_cli(app: typer.Typer) -> None:
 
     # --- Stage 5: health, status, report ---
     STALE_LOOP_SEC = 300.0
+    # degradation_monitor runs on a slower cadence; do not fail health when it is older than 300s but still within 900s
+    STALE_SEC_OVERRIDE_SLOW_LOOPS: dict[str, float] = {"degradation_monitor": 900.0}
 
     @app.command()
     def health(
@@ -517,7 +533,7 @@ def register_stage3_cli(app: typer.Typer) -> None:
         """Health check: read heartbeat; report loop freshness; exit 1 if any loop stale or heartbeat missing."""
         config, env = load_config(config_path)
         db_path = Path(config.database_path)
-        art = Path("artifacts")
+        art = Path(config.artifacts_root)
         issues = []
         if not db_path.parent.exists():
             issues.append("DB directory missing")
@@ -538,8 +554,11 @@ def register_stage3_cli(app: typer.Typer) -> None:
                         status = loop.get("status", "unknown")
                         last_ok = loop.get("last_ok_ts", 0)
                         loop_age = time.time() - last_ok if last_ok else 999999
+                        effective_stale_sec = STALE_SEC_OVERRIDE_SLOW_LOOPS.get(name, stale_sec)
                         typer.echo(f"  {name}: {status} (last_ok {loop_age:.0f}s ago) {loop.get('message') or ''}")
-                        if status == "fail" or loop_age > stale_sec:
+                        if status == "fail":
+                            stale_loops.append(name)
+                        elif loop_age > effective_stale_sec:
                             stale_loops.append(name)
                     if age > stale_sec:
                         issues.append("Heartbeat file stale >{}s".format(int(stale_sec)))
@@ -562,14 +581,21 @@ def register_stage3_cli(app: typer.Typer) -> None:
     def show_runtime_mode(
         config_path: Optional[Path] = typer.Option(None, "--config", "-c"),
     ) -> None:
-        """Show current mode, burn-in phase, credential mode (dual-key vs legacy), selected key availability."""
-        from src.config.config import resolve_bybit_credentials, get_bybit_env
+        """Show operating mode, environment, automation, and manual approval gates."""
+        from src.config.config import resolve_bybit_credentials, get_bybit_env, get_effective_operating_mode
         from src.cli.validate_env import _has_dual_key_demo, _has_dual_key_live, _has_legacy_keys
         config, env = load_config(config_path)
         env_type = get_bybit_env(env)
+        operating_mode = get_effective_operating_mode(config, env)
+        typer.echo(f"operating_mode: {operating_mode}")
+        if getattr(config, "instance_name", None):
+            typer.echo(f"instance_name: {config.instance_name}")
+        typer.echo(f"selected_environment: {env_type.upper()}")
+        auto = getattr(config, "automation", None)
+        automation_active = bool(auto and getattr(auto, "enabled", False) and getattr(auto, "demo_orchestration_enabled", False))
+        typer.echo(f"automation_active: {automation_active}")
+        typer.echo(f"manual_approval_required: {operating_mode == 'live_guarded'}")
         api_key, api_secret, is_legacy, _ = resolve_bybit_credentials(env, env_type)
-        selected_env = env_type.upper()  # DEMO | LIVE | TESTNET
-        typer.echo(f"selected_environment: {selected_env}")
         typer.echo(f"credential_mode: {'legacy' if is_legacy else 'dual_key'}")
         typer.echo(f"selected_key_pair: {'present' if (api_key and api_secret) else 'missing'}")
         dual_demo = _has_dual_key_demo(env)
@@ -591,14 +617,12 @@ def register_stage3_cli(app: typer.Typer) -> None:
         typer.echo(f"active_strategy: {getattr(config, 'active_strategy', 'flow_impulse')}")
         if is_legacy:
             typer.echo("WARN: Using legacy single-key. Set BYBIT_DEMO_API_KEY/SECRET and BYBIT_LIVE_API_KEY/SECRET for dual-key.")
-        if config.mode == "live" and burn_in and getattr(burn_in, "burn_in_phase", "") in ("demo", "testnet"):
-            typer.echo("WARN: mode is live but burn_in_phase is demo/testnet. Set burn_in_phase to live_small for guarded live.")
-        if burn_in and getattr(burn_in, "burn_in_enabled", False) is False:
-            typer.echo("WARN: burn_in_enabled is false during validation phase.")
+        if operating_mode == "live_guarded" and env_type != "live":
+            typer.echo("WARN: operating_mode is live_guarded but BYBIT_ENV is not live. Set BYBIT_ENV=live for guarded live.")
         if config.dry_run:
             typer.echo("execution: simulated only (dry_run=true; no orders will be placed)")
         else:
-            typer.echo("execution: real orders will be placed on {}".format(selected_env))
+            typer.echo("execution: real orders will be placed on {}".format(env_type.upper()))
 
     @app.command("promote-env")
     def promote_env(
@@ -666,7 +690,8 @@ def register_stage3_cli(app: typer.Typer) -> None:
             typer.echo("Promotion failed: %s" % report.get("error", "unknown"))
             raise typer.Exit(1)
 
-        art_path = write_promotion_artifact(report)
+        _config, _ = load_config(cfg)
+        art_path = write_promotion_artifact(report, Path(_config.artifacts_root))
         typer.echo("")
         typer.echo("Promotion applied.")
         typer.echo("  Files changed: %s" % ", ".join(report.get("files_changed", [])))
@@ -695,26 +720,93 @@ def register_stage3_cli(app: typer.Typer) -> None:
             typer.echo("Or in foreground: ./scripts/start_small_live.sh --foreground")
             typer.echo("Then: ./scripts/check_burnin.sh  python run_bot.py health")
 
+    @app.command("promote-to-live")
+    def promote_to_live(
+        candidate_config_id: str = typer.Option(..., "--candidate-config-id", help="Demo candidate config_id to import"),
+        demo_config: Optional[Path] = typer.Option(None, "--demo-config", help="Demo config path (default: config/config.demo.yaml)"),
+        live_config: Optional[Path] = typer.Option(None, "--live-config", help="Live config path (default: config/config.live.yaml)"),
+        activate: bool = typer.Option(False, "--activate", help="Activate the imported config in Live (default: import only)"),
+        reason: Optional[str] = typer.Option(None, "--reason", help="Reason for promotion (e.g. 'approved after demo review')"),
+        dry_run: bool = typer.Option(False, "--dry-run", help="Preview only; do not write to Live"),
+    ) -> None:
+        """Import a Demo candidate into the Live instance. Default: import only; use --activate to make it active in Live."""
+        from pathlib import Path
+        demo_cfg = demo_config or Path("config/config.demo.yaml")
+        live_cfg = live_config or Path("config/config.live.yaml")
+        if not demo_cfg.exists():
+            typer.echo("ERROR: Demo config not found: %s" % demo_cfg)
+            raise typer.Exit(1)
+        if not live_cfg.exists():
+            typer.echo("ERROR: Live config not found: %s" % live_cfg)
+            raise typer.Exit(1)
+        _demo, _ = load_config(demo_cfg)
+        _live, _ = load_config(live_cfg)
+        demo_db = _demo.database_path
+        live_db = _live.database_path
+        live_artifact_dir = Path(_live.artifacts_root) / "configs"
+        result = import_candidate_to_live(
+            candidate_config_id=candidate_config_id,
+            demo_db_path=demo_db,
+            live_db_path=live_db,
+            live_artifact_dir=live_artifact_dir,
+            description="Imported from Demo candidate %s" % candidate_config_id,
+            reason=reason or ("approved after demo review" if activate else ""),
+            activate=activate,
+            dry_run=dry_run,
+        )
+        typer.echo("=== Promote to Live (Demo candidate -> Live instance) ===")
+        typer.echo("candidate_config_id: %s" % result["candidate_config_id"])
+        typer.echo("demo_db: %s" % demo_db)
+        typer.echo("live_db: %s" % live_db)
+        if not result["ok"]:
+            typer.echo("ERROR: %s" % result["error"])
+            raise typer.Exit(1)
+        typer.echo("live_config_id: %s" % result["live_config_id"])
+        typer.echo("imported: %s" % result["imported"])
+        typer.echo("already_present: %s" % result["already_present"])
+        typer.echo("activated: %s" % result["activated"])
+        if result.get("dry_run"):
+            typer.echo("(dry-run: no changes written)")
+        typer.echo("")
+        if result["activated"]:
+            typer.echo("Config is now active in Live. Restart Live instance to use it:")
+            typer.echo("  sudo systemctl restart money-flow-momentum-live")
+            typer.echo("  (or ./scripts/start_live_guarded.sh)")
+        else:
+            typer.echo("Next: inspect the imported config in Live:")
+            typer.echo("  python run_bot.py config show --config-id %s --config %s" % (result["live_config_id"], live_cfg))
+            typer.echo("To activate it in Live (either):")
+            typer.echo("  python run_bot.py promote-to-live --candidate-config-id %s --demo-config %s --live-config %s --activate" % (candidate_config_id, demo_cfg, live_cfg))
+            typer.echo("  python run_bot.py promote --config-id %s --config %s" % (result["live_config_id"], live_cfg))
+            if reason:
+                typer.echo("  (add --reason \"...\" to promote-to-live if desired)")
+
     @app.command()
     def status(
         config_path: Optional[Path] = typer.Option(None, "--config", "-c"),
         heartbeat_path: Optional[Path] = typer.Option(None, "--heartbeat"),
     ) -> None:
-        """Diagnostics: active config, DB path, Stage 5, strategy, artifact dirs, last heartbeat freshness."""
+        """Diagnostics: operating mode, active config, DB path, Stage 5, strategy, artifact dirs, last heartbeat freshness."""
         config, env = load_config(config_path)
-        from src.config.config import get_bybit_env
+        from src.config.config import get_bybit_env, get_effective_operating_mode
+        operating_mode = get_effective_operating_mode(config, env)
         env_type = get_bybit_env(env)
+        typer.echo(f"operating_mode: {operating_mode}")
         typer.echo(f"selected_environment: {env_type.upper()}")
+        auto = getattr(config, "automation", None)
+        automation_active = bool(auto and getattr(auto, "enabled", False) and getattr(auto, "demo_orchestration_enabled", False))
+        typer.echo(f"automation_active: {automation_active}")
         from src.config.versioning import get_active_config_id
         aid = get_active_config_id(config.database_path)
         typer.echo(f"Active config: {aid or 'none'}")
         typer.echo(f"Database: {config.database_path}")
         typer.echo(f"Stage 5: {getattr(config, 'stage5_enabled', False)}")
         typer.echo(f"Strategy: {getattr(config, 'active_strategy', 'flow_impulse')}")
+        art_root = Path(config.artifacts_root)
         for name in ("artifacts", "artifacts/evaluations", "artifacts/optimizations"):
-            p = Path(name)
-            typer.echo(f"  {name}: {'exists' if p.exists() else 'missing'}")
-        hb_path = heartbeat_path or Path("artifacts/heartbeat.json")
+            p = art_root if name == "artifacts" else (art_root / "evaluations" if "evaluations" in name else art_root / "optimizations")
+            typer.echo(f"  {p}: {'exists' if p.exists() else 'missing'}")
+        hb_path = heartbeat_path or art_root / "heartbeat.json"
         if hb_path.exists():
             try:
                 from src.monitoring.heartbeat import read_heartbeat
@@ -758,7 +850,8 @@ def register_stage3_cli(app: typer.Typer) -> None:
         typer.echo(f"Degradation events (24h): {deg}")
         for r in prom:
             typer.echo(f"  Promotion: {r[0]} at {r[1]}")
-        hb_path = heartbeat_path or Path("artifacts/heartbeat.json")
+        art_root = Path(config.artifacts_root)
+        hb_path = heartbeat_path or art_root / "heartbeat.json"
         if hb_path.exists():
             try:
                 from src.monitoring.heartbeat import read_heartbeat
@@ -768,7 +861,8 @@ def register_stage3_cli(app: typer.Typer) -> None:
                     for k, v in data["loops"].items():
                         last_ok = v.get("last_ok_ts", 0)
                         age = time.time() - last_ok if last_ok else None
-                        stale = " (stale)" if (age is not None and age > 300) else ""
+                        effective_stale = STALE_SEC_OVERRIDE_SLOW_LOOPS.get(k, 300.0)
+                        stale = " (stale)" if (age is not None and age > effective_stale) else ""
                         typer.echo(f"  {k}: {v.get('status')}{stale}")
                 else:
                     typer.echo("No loop data in heartbeat")
@@ -851,7 +945,8 @@ def register_stage3_cli(app: typer.Typer) -> None:
         """Compute burn-in readiness; print classification and write artifacts if --output given."""
         config, _ = load_config(config_path)
         db = Database(config.database_path)
-        hb_path = heartbeat_path or Path("artifacts/heartbeat.json")
+        art_root = Path(config.artifacts_root)
+        hb_path = heartbeat_path or art_root / "heartbeat.json"
         burn = getattr(config, "burn_in", None)
         phase = getattr(burn, "burn_in_phase", "demo") if burn else "demo"
         from src.validation.readiness import compute_readiness
@@ -862,7 +957,7 @@ def register_stage3_cli(app: typer.Typer) -> None:
         typer.echo(f"Message: {result.message}")
         for k, v in result.details.items():
             typer.echo(f"  {k}: {v}")
-        out_dir = output_dir or Path("artifacts/burnin")
+        out_dir = output_dir or art_root / "burnin"
         out_dir = Path(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         import json
@@ -908,7 +1003,8 @@ def register_stage3_cli(app: typer.Typer) -> None:
         typer.echo(f"shadow_candidate_config_id: {snap.get('shadow_candidate_config_id')}")
         artifact = out.get("artifact") or {}
         if artifact:
-            typer.echo("latest_artifact: artifacts/automation/automation_status.json")
+            cfg, _ = load_config(config_path)
+            typer.echo("latest_artifact: %s" % (Path(cfg.artifacts_root) / "automation" / "automation_status.json"))
         else:
             typer.echo("latest_artifact: none")
 
@@ -930,6 +1026,9 @@ def register_stage3_cli(app: typer.Typer) -> None:
         Post-burn-in helper: runs readiness, evaluation, optimizer, candidate listing,
         and optional shadow start/report. Does NOT auto-promote or switch environments.
         """
+        config, _ = load_config(config_path)
+        default_output = Path(config.artifacts_root) / "pipeline"
+        output_dir = output_dir or default_output
         summary = run_post_burnin_pipeline(
             config_path=config_path,
             from_date=from_date,
@@ -943,7 +1042,7 @@ def register_stage3_cli(app: typer.Typer) -> None:
         )
 
         # Write summary artifact
-        out_base = output_dir or pipeline_dir()
+        out_base = Path(output_dir)
         out_base = Path(out_base)
         out_base.mkdir(parents=True, exist_ok=True)
         ts = summary.get("timestamp_ms") or int(time.time() * 1000)

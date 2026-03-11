@@ -1,6 +1,15 @@
 # Burn-in and Live Validation
 
-This document describes **burn-in mode** and how to use it for **Bybit Demo Trading** (recommended) and small-cap live validation.
+The repo operates in two **canonical operating modes** (set `operating_mode` in config):
+
+- **`demo_research`** — Autonomous Demo research/tuning. BYBIT_ENV=demo (or testnet), burn_in_phase: demo. Use for burn-in and optimization on Bybit Demo Trading.
+- **`live_guarded`** — Guarded live trading. BYBIT_ENV=live, burn_in_phase live_guarded or live_small. Stricter effective profile; manual approval required for config promotion and Demo→Live.
+
+**Dual-instance:** You can run Demo and Live on the same host with isolated paths: use `config/config.demo.yaml` + `.env.demo` (→ `data/demo/bot.db`, `artifacts/demo/`, `logs/demo/`) and `config/config.live.yaml` + `.env.live` (→ `data/live/bot.db`, `artifacts/live/`, `logs/live/`). Only Demo runs the automation timer; promotion remains manual. See **docs/INSTALL_AND_RUN_GUIDE.md**.
+
+Validation (`python run_bot.py validate`) reports the current **operating_mode** and a mode-ready message. Pass `--config config/config.demo.yaml` or `config/config.live.yaml` to validate per instance.
+
+This document describes **burn-in mode** (limits, audit, readiness) and how it fits **Bybit Demo Trading** (recommended for demo_research) and guarded live (live_guarded).
 
 **Canonical install/run:** See **docs/INSTALL_AND_RUN_GUIDE.md** for the exact Ubuntu install and run sequence.
 
@@ -46,13 +55,13 @@ burn_in:
   burn_in_max_reconnect_per_hour: 5
 ```
 
-- **burn_in_phase**: `demo` for demo burn-in (recommended); `testnet` for legacy testnet; `live_small` for small live; `live_guarded` for guarded live.
+- **burn_in_phase**: `demo` for demo_research; `testnet` for legacy testnet; `live_small` or `live_guarded` for live_guarded mode.
 - **burn_in_fail_on_***: when true, any protection mismatch or execution drift in the window causes gate breach and blocks new entries until the next window or config change.
 - Other limits are enforced only when burn-in is enabled.
 
-## Running burn-in on demo (recommended)
+## Running burn-in on demo (demo_research)
 
-1. Set **demo** keys in `.env`: `BYBIT_ENV=demo`, `BYBIT_DEMO_API_KEY`, `BYBIT_DEMO_API_SECRET` (create from mainnet account → Demo Trading; do not use testnet for demo).
+1. Set **demo** keys in `.env`: `BYBIT_ENV=demo`, `BYBIT_DEMO_API_KEY`, `BYBIT_DEMO_API_SECRET`. Set `operating_mode: demo_research` in config for mode-first operation.
 2. Set `mode: paper` and `dry_run: false` to place **real Demo orders** (bootstrap does this when you choose demo). Set `dry_run: true` only if you want simulated entries with no orders.
 3. Enable burn-in and set phase to `demo`:
 
@@ -64,19 +73,14 @@ burn_in:
      burn_in_max_notional_usdt: 2000
    ```
 
-4. Run the bot: `python3 run_bot.py run` or `./scripts/start_testnet_burnin.sh`.
+4. Run the bot: `python3 run_bot.py run` or `./scripts/start_testnet_burnin.sh` (demo_research).
 5. Check status and readiness regularly (see CLI reference below).
 6. Inspect artifacts: `artifacts/heartbeat.json`, `artifacts/burnin/readiness_*.json`, DB tables.
 
-## Running burn-in on testnet (legacy)
+## Running burn-in on small live (live_guarded)
 
-1. Set **testnet** keys: `BYBIT_ENV=testnet`, `BYBIT_TESTNET_API_KEY`, `BYBIT_TESTNET_API_SECRET` (or legacy pair).
-2. Set `burn_in_phase: testnet` and run as above. Prefer **demo** for new setups.
-
-## Running burn-in on small live
-
-1. After demo (or testnet) looks good, set **live** keys in `.env`: `BYBIT_ENV=live`, `BYBIT_LIVE_API_KEY`, `BYBIT_LIVE_API_SECRET` (or legacy pair), and set `mode: live` with **small** size.
-2. Set `burn_in_phase: live_small` and run. Review evaluation reports for fill quality and execution drift before increasing size.
+1. After demo looks good, set **live** keys in `.env`: `BYBIT_ENV=live`, `BYBIT_LIVE_API_KEY`, `BYBIT_LIVE_API_SECRET`, and set `operating_mode: live_guarded` and `mode: live` with **small** size.
+2. Set `burn_in_phase: live_small` or `live_guarded` and run. Review evaluation reports for fill quality and execution drift before increasing size.
 
 ## Readiness
 
@@ -105,15 +109,15 @@ When `automation.enabled: true` and `automation.demo_orchestration_enabled: true
 
 This automation is **Demo-only** and does **not** change burn-in semantics: it never auto-promotes config or environment; it only suggests next manual commands.
 
-## Promote environment (Demo -> Live)
+## Promote environment (demo_research → live_guarded)
 
 Use the **promote-env** helper to switch from Demo to guarded Live only when readiness passes and you explicitly confirm:
 
 - **Preview:** `python run_bot.py promote-env` — shows current env, readiness, live credentials; no changes.
-- **Apply:** `python run_bot.py promote-env --confirm-live` — backs up `.env` and config, sets `BYBIT_ENV=live` and `burn_in_phase: live_small`.
+- **Apply:** `python run_bot.py promote-env --confirm-live` — backs up `.env` and config, sets `BYBIT_ENV=live` and `burn_in_phase: live_small`. Set `operating_mode: live_guarded` in config for mode-first operation.
 - **Optional:** `--reason "reason"`, `--start-live` (prints start command after switch).
 
-The helper **does not** auto-promote: it requires `--confirm-live`. It checks readiness is READY_FOR_SMALL_LIVE and live credentials exist. Artifacts: `artifacts/validation/env_promotion_<ts>.json` and `.md`. Roll back by restoring the `.bak.<ts>` files or setting `BYBIT_ENV=demo` and `burn_in_phase: demo` again.
+The helper **does not** auto-promote: it requires `--confirm-live`. It checks readiness is READY_FOR_SMALL_LIVE and live credentials exist. Artifacts: `artifacts/validation/env_promotion_<ts>.json` and `.md`. Roll back by restoring the `.bak.<ts>` files or setting `BYBIT_ENV=demo` and `burn_in_phase: demo` (and `operating_mode: demo_research` if desired) again.
 
 ## Metrics to review before increasing size
 
@@ -163,4 +167,4 @@ python3 run_bot.py report
 python3 run_bot.py health
 ```
 
-See also **docs/DEPLOYMENT_AND_HEALTHCHECKS.md**, **docs/MONITORING_AND_ALERTING.md**, and **docs/BURN_IN_OPERATOR_RUNBOOK.md** for the operator script workflow (install, validate, **demo** burn-in, small-live, incident stop, evaluate, optimize, shadow, promote/rollback).
+See also **docs/DEPLOYMENT_AND_HEALTHCHECKS.md**, **docs/MONITORING_AND_ALERTING.md**, and **docs/BURN_IN_OPERATOR_RUNBOOK.md** for the operator workflow in terms of **demo_research** and **live_guarded** (install, validate, start Demo, small-live readiness, guarded live start, incident stop, evaluate, optimize, shadow, promote/rollback).

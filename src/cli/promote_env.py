@@ -58,8 +58,9 @@ def run_promote_env_prechecks(
             errors=["Config file not found: %s" % config_path],
         )
 
+    # Load config and env (use env_path so the right .env is loaded regardless of cwd)
     try:
-        config, env = load_config(config_path)
+        config, env = load_config(config_path, env_file_path=env_path if env_path and env_path.exists() else None)
     except Exception as e:
         return PromoteEnvPrecheckResult(
             ok=False,
@@ -106,7 +107,8 @@ def run_promote_env_prechecks(
         try:
             from src.storage.db import Database
             db = Database(config.database_path)
-            hb_path = Path("artifacts/heartbeat.json")
+            art_root = Path(config.artifacts_root)
+            hb_path = art_root / "heartbeat.json"
             config_id = get_active_config_id(config.database_path)
             readiness = compute_readiness(
                 db,

@@ -114,8 +114,8 @@ class TradingBot:
         self._db = Database(self.config.database_path)
         self._recon = ReconciliationStore()
         ensure_stage3_schema(self.config.database_path)
-        ensure_artifact_dirs()
-        self._heartbeat_path = Path("artifacts/heartbeat.json")
+        ensure_artifact_dirs(self.config.artifacts_root)
+        self._heartbeat_path = Path(self.config.artifacts_root) / "heartbeat.json"
         from src.monitoring.health import HealthSnapshot
         self._health = HealthSnapshot()
         for name in ("public_ws", "private_ws", "context_refresh", "reconciliation", "lifecycle", "score_entry", "degradation_monitor"):
@@ -1123,17 +1123,21 @@ class TradingBot:
 
 @app.command()
 def run(
-    config_path: Optional[Path] = typer.Option(None, "--config", "-c", help="Config file path"),
+    config_path: Optional[Path] = typer.Option(None, "--config", "-c", help="Config file path (e.g. config/config.demo.yaml or config/config.live.yaml)"),
 ) -> None:
     """Run the trading bot."""
     config, env = load_config(config_path)
+    log_file = config.logging.log_file
+    if not log_file and getattr(config, "logs_dir", None):
+        log_file = str(Path(config.logs_dir) / "bot.log")
     setup_logging(
         level=config.logging.level,
-        log_file=config.logging.log_file,
+        log_file=log_file,
         rotation=config.logging.rotation,
         retention=config.logging.retention,
     )
-    logger.info("Starting bot mode={} dry_run={} env={}", config.mode, config.dry_run, get_bybit_env(env))
+    instance_tag = f" instance={config.instance_name}" if config.instance_name else ""
+    logger.info("Starting bot mode={} dry_run={} env={}{}", config.mode, config.dry_run, get_bybit_env(env), instance_tag)
     if config.dry_run:
         logger.info("Execution: simulated only (no orders will be placed)")
     else:

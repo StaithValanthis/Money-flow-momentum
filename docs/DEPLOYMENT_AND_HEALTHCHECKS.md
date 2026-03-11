@@ -1,5 +1,14 @@
 # Deployment and Health Checks
 
+## Operating Modes
+
+The bot uses two top-level operating modes (`config/config.yaml` or instance configs → `operating_mode:`):
+
+- **demo_research** – Autonomous Demo: trade, evaluate, optimize, shadow on Demo; no manual approval during research. Only safety issues (kill switch, protection mismatch, execution drift, stale health) block. Set `operating_mode: demo_research` and `BYBIT_ENV=demo` for this path. Use `config/config.demo.yaml` and `.env.demo` for the **Demo instance** in dual-instance mode.
+- **live_guarded** – Guarded Live: stricter limits; config promotion and Demo → Live promotion require manual approval. Set `operating_mode: live_guarded` and `BYBIT_ENV=live` when running live. Use `config/config.live.yaml` and `.env.live` for the **Live instance** in dual-instance mode.
+
+Check current mode: `python run_bot.py show-runtime-mode` or `python run_bot.py status` (both show `operating_mode` and `automation_active`). For dual-instance, pass `--config config/config.demo.yaml` or `--config config/config.live.yaml` so status/heartbeat paths are instance-scoped.
+
 ## Startup Checks
 
 Before running the bot, ensure:
@@ -46,6 +55,7 @@ Does **not** auto-promote; requires `--confirm-live` to change `.env` and config
 ```bash
 python3 run_bot.py health
 # Optional: --heartbeat path/to/heartbeat.json  --stale-sec 300
+# Dual-instance: use --config config/config.demo.yaml or config/config.live.yaml so heartbeat path is instance-scoped (artifacts/demo/heartbeat.json or artifacts/live/heartbeat.json)
 ```
 Exits 0 if OK; 1 if heartbeat missing, heartbeat file stale (default >5min), or any loop reported stale/fail. Per-loop last_ok age is shown.
 
@@ -53,8 +63,9 @@ Exits 0 if OK; 1 if heartbeat missing, heartbeat file stale (default >5min), or 
 ```bash
 python3 run_bot.py status
 # Optional: --heartbeat path
+# Dual-instance: --config config/config.demo.yaml or config/config.live.yaml
 ```
-Prints active config, database path, stage5_enabled, active_strategy, artifact dir existence, and (when heartbeat file exists) heartbeat age and per-loop freshness.
+Prints **operating_mode**, **instance_name** (when present), active config, database path, stage5_enabled, active_strategy, **automation_active**, artifact dir existence, and (when heartbeat file exists) heartbeat age and per-loop freshness.
 
 ### Report (summary)
 ```bash
@@ -69,12 +80,13 @@ The running bot **writes the heartbeat file** from its main loops: context refre
 
 ## Systemd
 
-- Use `./scripts/install_systemd.sh` to install the main bot unit and (optionally) the automation timer. Use `--no-automation` to skip the timer. Substitutes repo path and user in service files; set `User` and `WorkingDirectory` if needed.
-- **Two units:** (1) **Main bot** (`money-flow-momentum.service`) — trading. (2) **Automation timer** (`money-flow-momentum-automation.timer`) — runs `python run_bot.py automation cycle` every 15 min; does not start the bot and does not auto-promote config or environment. Enable/start the timer only when Demo orchestration is desired; the main bot should be running separately.
+- Use `./scripts/install_systemd.sh` to install the main bot unit and (optionally) the automation timer. Use `--no-automation` to skip the timer. For **dual-instance** (Demo + Live on one host), use `./scripts/install_systemd.sh --dual-instance` to install `money-flow-momentum-demo.service`, `money-flow-momentum-live.service`, and `money-flow-momentum-demo-automation.service` + `.timer`.
+- **Two units (single):** (1) **Main bot** (`money-flow-momentum.service`) — trading. (2) **Automation timer** (`money-flow-momentum-automation.timer`) — runs `python run_bot.py automation cycle` every 15 min; does not start the bot and does not auto-promote config or environment. Enable/start the timer only when Demo orchestration is desired; the main bot should be running separately.
+- **Dual-instance:** Demo and Live run as separate services; only the Demo instance has the automation timer. Status: `./scripts/status_demo.sh`, `./scripts/status_live.sh`. Logs: `./scripts/tail_logs.sh demo`, `./scripts/tail_logs.sh live`.
 - **Status:** `./scripts/service_status.sh` (both), `./scripts/service_status.sh bot`, `./scripts/service_status.sh automation`, or `sudo systemctl status money-flow-momentum` / `sudo systemctl status money-flow-momentum-automation.timer`
 - **Logs:** `./scripts/tail_logs.sh` (main bot) or `./scripts/tail_logs.sh automation` (automation cycle); or `journalctl -u money-flow-momentum -f` / `journalctl -u money-flow-momentum-automation.service -f`
 - **Automation status:** `./scripts/automation_status.sh`
-- Ensure `data/` and `artifacts/` are writable by the service user.
+- Ensure `data/` and `artifacts/` (or `data/demo/`, `data/live/`, `artifacts/demo/`, `artifacts/live/` for dual-instance) are writable by the service user.
 
 ## Caveats
 

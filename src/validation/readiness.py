@@ -131,6 +131,8 @@ def compute_readiness(
 
     if burn_in_phase == "testnet":
         return ReadinessResult(READINESS_READY_TESTNET, details, "OK for testnet continuation")
+    if burn_in_phase == "demo":
+        return ReadinessResult(READINESS_READY_TESTNET, details, "OK for demo continuation")
     if burn_in_phase == "live_small":
         return ReadinessResult(READINESS_READY_SMALL_LIVE, details, "OK for small live (review metrics)")
     return ReadinessResult(READINESS_NEEDS_REVIEW, details, "Review before proceeding")

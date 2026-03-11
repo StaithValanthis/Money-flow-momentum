@@ -56,6 +56,7 @@ database_path: """ + str(tmp_path / "data" / "bot.db").replace("\\", "/") + """
         result = validate_environment(config_path=cfg, require_api_keys_for_live=True)
         assert result.ok is True, result.errors
         assert len(result.errors) == 0
+        assert getattr(result, "operating_mode", None) in ("demo_research", "live_guarded")
     finally:
         os.chdir(orig)
 
@@ -147,7 +148,9 @@ def test_validate_cli_invokes_validate():
         assert "ERROR" in r.stdout or "Validation failed" in r.stdout or "error" in r.stderr.lower()
     if r.returncode == 0:
         assert "Validation OK." in r.stdout
+        assert "operating_mode:" in r.stdout
         assert "Ready for" in r.stdout
+        assert "demo_research" in r.stdout or "live_guarded" in r.stdout
 
 
 def test_show_runtime_mode_cli():

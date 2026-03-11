@@ -165,6 +165,42 @@ def test_health_command_stale_vs_fresh(tmp_path):
     assert r2.returncode == 1
 
 
+def test_health_command_degradation_monitor_slow_cadence_ok(tmp_path):
+    """Health passes when degradation_monitor is older than default 300s but within its 900s threshold."""
+    root = Path(__file__).resolve().parents[1]
+    hb = tmp_path / "heartbeat.json"
+    health = HealthSnapshot()
+    health.report_ok("score_entry")
+    health.report_ok("public_ws")
+    health.report_ok("degradation_monitor")
+    write_heartbeat(health, hb)
+    # Make degradation_monitor 400s old; others and file ts fresh
+    import json
+    data = read_heartbeat(hb)
+    assert data and "loops" in data
+    now = time.time()
+    data["ts"] = now - 10
+    data["loops"]["score_entry"]["last_ok_ts"] = now - 10
+    data["loops"]["public_ws"]["last_ok_ts"] = now - 10
+    data["loops"]["degradation_monitor"]["last_ok_ts"] = now - 400
+    with open(hb, "w") as f:
+        json.dump(data, f)
+    r = subprocess.run(
+        [sys.executable, "run_bot.py", "health", "--heartbeat", str(hb), "--stale-sec", "300"],
+        capture_output=True, text=True, cwd=root,
+    )
+    assert r.returncode == 0, (r.stdout, r.stderr)
+    # degradation_monitor >900s => health should fail
+    data["loops"]["degradation_monitor"]["last_ok_ts"] = now - 1000
+    with open(hb, "w") as f:
+        json.dump(data, f)
+    r2 = subprocess.run(
+        [sys.executable, "run_bot.py", "health", "--heartbeat", str(hb), "--stale-sec", "300"],
+        capture_output=True, text=True, cwd=root,
+    )
+    assert r2.returncode == 1
+
+
 def test_allocator_candidate_set_distributes():
     """Allocator distributes across candidate set."""
     config = RiskConfig(max_total_risk_pct=1.0, max_concurrent_positions=5)

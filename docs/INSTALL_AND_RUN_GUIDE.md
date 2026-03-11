@@ -12,6 +12,62 @@ Canonical install and run workflow for Money Flow Momentum on a headless Ubuntu 
 
 ---
 
+## Operating Modes
+
+The bot has two top-level operating modes. Set **`operating_mode`** in `config/config.yaml`:
+
+- **`demo_research`** – Autonomous Demo: trade, evaluate, optimize, shadow on Demo; no manual approval during research. Only safety issues block. Implies burn-in enabled, phase demo, automation enabled.
+- **`live_guarded`** – Guarded Live: stricter limits; config promotion and Demo → Live require manual approval.
+
+If omitted, mode is derived from env and automation/burn-in (Demo + automation + demo phase → `demo_research`; else `live_guarded`). Check: `python run_bot.py show-runtime-mode` or `python run_bot.py status` (both show `operating_mode`).
+
+---
+
+## Dual-instance (recommended)
+
+You can run **Demo** and **Live** simultaneously on one host with full isolation: separate config, env, DB, artifacts, logs, and heartbeat per instance.
+
+| Instance | Config | Env | DB | Artifacts | Logs |
+|----------|--------|-----|-----|-----------|------|
+| Demo | `config/config.demo.yaml` | `.env.demo` | `data/demo/bot.db` | `artifacts/demo/` | `logs/demo/` |
+| Live | `config/config.live.yaml` | `.env.live` | `data/live/bot.db` | `artifacts/live/` | `logs/live/` |
+
+- **Only the Demo instance** runs the automation timer (evaluate, optimize, shadow, recommendation). Live does not run automation.
+- **Promotion remains manual:** operator promotes config and promote-env when appropriate; no auto-promote.
+
+**Validate per instance:**
+```bash
+python run_bot.py validate --config config/config.demo.yaml
+python run_bot.py validate --config config/config.live.yaml
+```
+
+**Start (scripts):**
+```bash
+./scripts/start_demo_research.sh    # Demo research
+./scripts/start_live_guarded.sh     # Live guarded
+```
+
+**Status / logs:**
+```bash
+./scripts/status_demo.sh
+./scripts/status_live.sh
+./scripts/tail_logs.sh demo [lines]
+./scripts/tail_logs.sh live [lines]
+./scripts/tail_logs.sh "demo automation" [lines]
+./scripts/automation_status.sh   # point at demo (use with config/config.demo.yaml or run from repo where demo is default)
+```
+
+**Promote config / environment (manual):** When promoting from Demo to Live, use the **Live** config and **Live** env for the promote-env target; run promote-env with `--config config/config.live.yaml` and `--env .env.live` when applying the switch to the live instance’s env file.
+
+```bash
+python run_bot.py promote-env --config config/config.live.yaml --env .env.live
+python run_bot.py promote-env --config config/config.live.yaml --env .env.live --confirm-live
+```
+
+**Systemd (dual-instance):** Use `./scripts/install_systemd.sh --dual-instance` to install `money-flow-momentum-demo.service`, `money-flow-momentum-live.service`, and `money-flow-momentum-demo-automation.service` + `.timer`. Start demo and live separately; only enable/start the demo-automation timer for the Demo instance.
+
+---
+
 ## Part 1: Installation
 
 ### 1.1 Clone and enter repo
@@ -56,8 +112,8 @@ Only needed if you want to change risk/limits or did not use bootstrap with demo
 
 To enable or adjust burn-in manually, edit `config/config.yaml`:
 
-- `mode: paper`
-- Enable burn-in and set phase to `demo`:
+- Set **operating_mode** (recommended): `operating_mode: demo_research` for autonomous Demo (sets burn-in and automation automatically).
+- Or set mode and burn-in explicitly: `mode: paper`, and:
 
 ```yaml
 burn_in:
@@ -86,7 +142,7 @@ python run_bot.py show-runtime-mode
 
 Or: `./scripts/show_runtime_mode.sh`
 
-Confirm `selected_environment: DEMO`, `burn_in_phase: demo`, `dry_run: false` (for real Demo orders), and `selected_key_pair: present`.
+Confirm `operating_mode: demo_research` (or `selected_environment: DEMO`), `burn_in_phase: demo`, `dry_run: false` (for real Demo orders), and `selected_key_pair: present`.
 
 ### 1.7 Optional: install systemd service (main bot + automation timer)
 
@@ -165,7 +221,8 @@ Or use the shell wrapper: `./scripts/promote_demo_to_live.sh` (preview), `./scri
 | Optimizer report | `python run_bot.py optimize report <run_id>` |
 | Shadow start | `python run_bot.py shadow start --candidate-config-id <id>` |
 | Shadow report | `python run_bot.py shadow report <candidate_config_id>` |
-| Promote candidate (manual) | `python run_bot.py promote --config-id <id>` |
+| Promote candidate (manual) | `python run_bot.py promote --config-id <id>` (within same instance) |
+| **Import Demo candidate to Live** | `python run_bot.py promote-to-live --candidate-config-id <id> --demo-config config/config.demo.yaml --live-config config/config.live.yaml` (optional: `--activate`) |
 | Promote status | `python run_bot.py promote status` |
 | Rollback config | `python run_bot.py config rollback [--reason "reason"]` or `python run_bot.py rollback [--reason "reason"]` |
 | Config list | `python run_bot.py config list` |
@@ -186,16 +243,16 @@ Or use the shell wrapper: `./scripts/promote_demo_to_live.sh` (preview), `./scri
 
 ## Key file paths
 
-| Item | Path |
-|------|------|
-| Config | `config/config.yaml` |
-| Env | `.env` |
-| Database | `data/bot.db` (or `database_path` in config) |
-| Logs | `logs/bot.log` |
-| Heartbeat | `artifacts/heartbeat.json` |
-| Burn-in readiness | `artifacts/burnin/readiness_*.json`, `readiness_*.md` |
-| Environment promotion | `artifacts/validation/env_promotion_<ts>.json`, `env_promotion_<ts>.md` |
-| Evaluations | `artifacts/evaluations/` |
+| Item | Single-instance | Demo (dual) | Live (dual) |
+|------|-----------------|-------------|-------------|
+| Config | `config/config.yaml` | `config/config.demo.yaml` | `config/config.live.yaml` |
+| Env | `.env` | `.env.demo` | `.env.live` |
+| Database | `data/bot.db` | `data/demo/bot.db` | `data/live/bot.db` |
+| Logs | `logs/bot.log` | `logs/demo/` | `logs/live/` |
+| Heartbeat | `artifacts/heartbeat.json` | `artifacts/demo/heartbeat.json` | `artifacts/live/heartbeat.json` |
+| Burn-in readiness | `artifacts/burnin/` | `artifacts/demo/burnin/` | `artifacts/live/burnin/` |
+| Environment promotion | `artifacts/validation/` | `artifacts/demo/validation/` | `artifacts/live/validation/` |
+| Evaluations | `artifacts/evaluations/` | `artifacts/demo/evaluations/` | `artifacts/live/evaluations/` |
 
 ---
 
@@ -203,19 +260,23 @@ Or use the shell wrapper: `./scripts/promote_demo_to_live.sh` (preview), `./scri
 
 Two units: **main trading bot** and **Demo orchestration timer**. Trading and orchestration are separate; the timer only runs `python run_bot.py automation cycle` and does not start the bot or auto-promote anything.
 
+**Single-instance:** `./scripts/install_systemd.sh` (main + automation timer); use `--no-automation` to skip timer.
+
+**Dual-instance:** `./scripts/install_systemd.sh --dual-instance` installs `money-flow-momentum-demo.service`, `money-flow-momentum-live.service`, and `money-flow-momentum-demo-automation.service` + `.timer`. Only the Demo instance runs the automation timer; Live is trading-only.
+
 | Action | Command |
 |--------|---------|
-| Install units | `./scripts/install_systemd.sh` (main + automation timer); use `--no-automation` to skip timer |
+| Install units | `./scripts/install_systemd.sh` (single) or `./scripts/install_systemd.sh --dual-instance` |
 | Reload | `sudo systemctl daemon-reload` |
-| **Main bot** enable/start | `sudo systemctl enable money-flow-momentum` then `sudo systemctl start money-flow-momentum` |
-| **Main bot** stop/restart | `sudo systemctl stop money-flow-momentum` / `sudo systemctl restart money-flow-momentum` |
-| **Automation timer** enable/start | `sudo systemctl enable money-flow-momentum-automation.timer` then `sudo systemctl start money-flow-momentum-automation.timer` |
-| **Automation timer** disable/stop | `sudo systemctl stop money-flow-momentum-automation.timer` then `sudo systemctl disable money-flow-momentum-automation.timer` |
-| Status (both) | `./scripts/service_status.sh` |
-| Status main only | `./scripts/service_status.sh bot` |
-| Status automation only | `./scripts/service_status.sh automation` |
-| Logs main bot | `./scripts/tail_logs.sh [lines]` or `tail -f logs/bot.log` |
-| Logs automation | `./scripts/tail_logs.sh automation [lines]` or `journalctl -u money-flow-momentum-automation.service -f` |
+| **Main bot** enable/start (single) | `sudo systemctl enable money-flow-momentum` then `sudo systemctl start money-flow-momentum` |
+| **Demo** (dual) | `sudo systemctl enable money-flow-momentum-demo` then `sudo systemctl start money-flow-momentum-demo` |
+| **Live** (dual) | `sudo systemctl enable money-flow-momentum-live` then `sudo systemctl start money-flow-momentum-live` |
+| **Automation timer** (single or dual; dual = demo only) | `sudo systemctl enable money-flow-momentum-automation.timer` or `money-flow-momentum-demo-automation.timer` then start |
+| Status (single) | `./scripts/service_status.sh` |
+| Status (dual) | `./scripts/status_demo.sh`, `./scripts/status_live.sh` |
+| Logs main bot (single) | `./scripts/tail_logs.sh [lines]` or `tail -f logs/bot.log` |
+| Logs (dual) | `./scripts/tail_logs.sh demo [lines]`, `./scripts/tail_logs.sh live [lines]` |
+| Logs automation | `./scripts/tail_logs.sh automation [lines]` or `./scripts/tail_logs.sh "demo automation" [lines]` (dual) |
 | Automation status + recommendation | `./scripts/automation_status.sh` |
 
 Service files: `money-flow-momentum.service` (main bot), `money-flow-momentum-automation.service` + `money-flow-momentum-automation.timer` (orchestration). The automation timer is only meaningful when `automation.enabled` and Demo orchestration are enabled in config and the main bot is running in Demo.
@@ -275,8 +336,8 @@ python run_bot.py rollback [--reason "reason"]
 
 ## Verifying current environment and phase
 
-- **Runtime mode:** `python run_bot.py show-runtime-mode` — shows `selected_environment` (DEMO/LIVE/TESTNET), `burn_in_phase`, `credential_mode`, `selected_key_pair`, `dual_key_configured`.
-- **Status:** `python run_bot.py status` — shows active config, DB path, strategy, burn-in phase, heartbeat age.
+- **Runtime mode:** `python run_bot.py show-runtime-mode` — shows **operating_mode**, `selected_environment` (DEMO/LIVE/TESTNET), **automation_active**, **manual_approval_required**, `burn_in_phase`, `credential_mode`, `selected_key_pair`, `dual_key_configured`.
+- **Status:** `python run_bot.py status` — shows operating_mode, active config, DB path, strategy, automation_active, burn-in phase, heartbeat age.
 - **Report:** `python run_bot.py report` — active config, degradation events, promotions, loop health.
 
 ---

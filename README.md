@@ -2,6 +2,24 @@
 
 Production-ready Bybit V5 cross-sectional flow impulse trading bot for linear USDT perpetuals.
 
+## Operating modes
+
+The bot has **two top-level operating modes** (set in `config/config.yaml` as `operating_mode:`):
+
+- **`demo_research`** – Autonomous Demo: trade, collect data, evaluate, optimize, and auto-start shadow on Bybit Demo. No manual approval during research. Only genuine safety issues (kill switch, protection mismatch, execution drift, stale health) block. Use for research and tuning.
+- **`live_guarded`** – Guarded Live: stricter limits and readiness expectations. Config promotion and Demo → Live environment promotion **require explicit manual confirmation**. Use for production live deployment.
+
+If `operating_mode` is omitted, it is derived from environment and existing automation/burn-in settings (Demo + automation + demo phase → `demo_research`; otherwise `live_guarded`). See [docs/INSTALL_AND_RUN_GUIDE.md](docs/INSTALL_AND_RUN_GUIDE.md) and [docs/DEPLOYMENT_AND_HEALTHCHECKS.md](docs/DEPLOYMENT_AND_HEALTHCHECKS.md).
+
+## Dual-instance operation (recommended)
+
+You can run **two isolated instances** on the same host at once:
+
+- **Demo research instance** — `operating_mode: demo_research`, `BYBIT_ENV=demo`. Uses `config/config.demo.yaml`, `.env.demo`, `data/demo/bot.db`, `artifacts/demo/`, `logs/demo/`. Only this instance runs the automation timer (evaluate, optimize, shadow, recommendation). Config promotion and Demo → Live remain **manual**.
+- **Live guarded instance** — `operating_mode: live_guarded`, `BYBIT_ENV=live`. Uses `config/config.live.yaml`, `.env.live`, `data/live/bot.db`, `artifacts/live/`, `logs/live/`. No automation timer; operator manually promotes configs and environment when appropriate.
+
+The instances do **not** share DB, artifacts, logs, or heartbeat. Use instance-specific config and env so each process knows its identity. See [docs/INSTALL_AND_RUN_GUIDE.md](docs/INSTALL_AND_RUN_GUIDE.md) for exact commands (validate, start, status, tail, promote) per instance.
+
 ## Features
 
 - **Real-time flow metrics**: Aggressive buy/sell volume, delta, CVD, VWAP, buy/sell ratio from public trade stream
@@ -31,9 +49,9 @@ chmod +x install.sh
 ./install.sh
 source venv/bin/activate
 python3 bootstrap_config.py   # prompts for demo keys, optionally live keys
-# Edit config/config.yaml: mode: paper, dry_run: false (for real Demo orders), burn_in_enabled: true, burn_in_phase: demo
+# Edit config/config.yaml: set operating_mode: demo_research (or mode: paper, dry_run: false, burn_in_enabled: true, burn_in_phase: demo)
 python3 run_bot.py validate
-python3 run_bot.py show-runtime-mode
+python3 run_bot.py show-runtime-mode   # shows operating_mode, selected_environment, automation_active
 ./scripts/start_testnet_burnin.sh   # starts demo burn-in (or run_bot.py run)
 ```
 
@@ -76,7 +94,8 @@ scripts/
 
 ## Configuration
 
-- `config/config.yaml` – strategy, risk, execution, context refresh, WS, recovery
+- **Single-instance:** `config/config.yaml` – strategy, risk, execution, etc. `.env` – API keys.
+- **Dual-instance:** Use `config/config.demo.yaml` + `.env.demo` for the Demo instance and `config/config.live.yaml` + `.env.live` for the Live instance. Paths (DB, artifacts, logs) are then scoped per instance (e.g. `data/demo/bot.db`, `artifacts/demo/`, `logs/demo/` and `data/live/bot.db`, `artifacts/live/`, `logs/live/`).
 - `.env` – API keys (never commit). **Dual-key (recommended):** `BYBIT_ENV=demo|live`, `BYBIT_DEMO_API_KEY`, `BYBIT_DEMO_API_SECRET`, `BYBIT_LIVE_API_KEY`, `BYBIT_LIVE_API_SECRET`. Legacy: `BYBIT_API_KEY`, `BYBIT_API_SECRET` or `BYBIT_ENV=testnet` with testnet keys.
 
 See `config/config.yaml.example` for all options. Key additions:
@@ -91,33 +110,58 @@ See `config/config.yaml.example` for all options. Key additions:
 - `scripts/live_trade.sh` – Live (mainnet)
 - `scripts/check_health.sh` – Health check
 - **Operator workflow (burn-in):** `scripts/validate_env.sh`, `scripts/start_testnet_burnin.sh` (demo burn-in), `scripts/check_burnin.sh`, `scripts/check_small_live_ready.sh`, **`scripts/promote_demo_to_live.sh`** (promote-env), `scripts/start_small_live.sh`, `scripts/incident_stop.sh`, `scripts/generate_burnin_bundle.sh`, `scripts/show_runtime_mode.sh`, `scripts/backup_config.sh`, `scripts/operator_menu.sh`
-- **Systemd:** `scripts/install_systemd.sh` (main bot + optional automation timer), `scripts/service_status.sh`, `scripts/tail_logs.sh`, `scripts/automation_status.sh`
+- **Dual-instance:** `scripts/start_demo_research.sh`, `scripts/start_live_guarded.sh`, `scripts/status_demo.sh`, `scripts/status_live.sh`, `scripts/tail_logs.sh demo|live`
+- **Systemd:** `scripts/install_systemd.sh` (main bot + optional automation timer; use `--dual-instance` for demo + live + demo-automation units), `scripts/service_status.sh`, `scripts/tail_logs.sh`, `scripts/automation_status.sh`
 
 See **docs/INSTALL_AND_RUN_GUIDE.md** for the canonical install and run workflow. See **docs/BURN_IN_OPERATOR_RUNBOOK.md** for the full operator runbook (burn-in, promote-env, guarded live, evaluate, optimize, shadow, promote/rollback).
 
 ## Systemd
 
-Two units are available: the **main trading bot** and the **Demo orchestration timer** (runs `python run_bot.py automation cycle` periodically). Trading and orchestration are separate; the timer does not start the bot.
+**Single-instance:** One main trading bot and an optional Demo orchestration timer. **Dual-instance (recommended):** Separate units for Demo and Live so both can run at once; only the Demo instance has the automation timer.
+
+| Setup | Units |
+|------|--------|
+| Single | `money-flow-momentum.service`, `money-flow-momentum-automation.service` + `.timer` (optional) |
+| Dual | `money-flow-momentum-demo.service`, `money-flow-momentum-live.service`, `money-flow-momentum-demo-automation.service` + `.timer` |
+
+Trading and orchestration are separate; the timer does not start the bot.
 
 ```bash
+# Single-instance
 ./scripts/install_systemd.sh   # install main service + automation timer (use --no-automation to skip timer)
+
+# Dual-instance (Demo + Live + Demo automation)
+./scripts/install_systemd.sh --dual-instance
+
 # Edit User, Group, WorkingDirectory in generated units if needed
 sudo systemctl daemon-reload
 
-# Main bot (trading)
+# Single: main bot (trading)
 sudo systemctl enable money-flow-momentum
 sudo systemctl start money-flow-momentum
 
-# Automation timer (Demo orchestration: readiness → evaluation → optimizer → shadow → recommendation; every 15 min)
+# Single: automation timer (Demo orchestration; every 15 min)
 sudo systemctl enable money-flow-momentum-automation.timer
 sudo systemctl start money-flow-momentum-automation.timer
 
-./scripts/service_status.sh              # both bot and automation
-./scripts/service_status.sh bot          # main bot only
-./scripts/service_status.sh automation   # automation timer + last run
-./scripts/tail_logs.sh [lines]           # bot log (logs/bot.log)
-./scripts/tail_logs.sh automation [lines] # automation cycle log (journalctl)
-./scripts/automation_status.sh          # automation status + recommendation artifact
+# Dual: Demo research instance
+sudo systemctl enable money-flow-momentum-demo
+sudo systemctl start money-flow-momentum-demo
+sudo systemctl enable money-flow-momentum-demo-automation.timer
+sudo systemctl start money-flow-momentum-demo-automation.timer
+
+# Dual: Live guarded instance
+sudo systemctl enable money-flow-momentum-live
+sudo systemctl start money-flow-momentum-live
+
+./scripts/service_status.sh              # both bot and automation (single) or use instance scripts
+./scripts/status_demo.sh                 # dual: demo status
+./scripts/status_live.sh                # dual: live status
+./scripts/tail_logs.sh [lines]          # single: bot log (logs/bot.log)
+./scripts/tail_logs.sh demo [lines]      # dual: demo log (logs/demo/)
+./scripts/tail_logs.sh live [lines]     # dual: live log (logs/live/)
+./scripts/tail_logs.sh "demo automation" [lines]  # dual: demo automation journal
+./scripts/automation_status.sh          # automation status + recommendation (point at demo artifacts when dual)
 ```
 
 To install only the main bot service (no automation timer): `./scripts/install_systemd.sh --no-automation`. The automation timer is only meaningful when `automation.enabled` and `automation.demo_orchestration_enabled` are true in config and the main bot is running in Demo.
@@ -179,9 +223,15 @@ python3 run_bot.py promote status
 python3 run_bot.py rollback
 python3 run_bot.py candidates list
 
+# Cross-instance: import Demo candidate into Live (then optionally activate)
+python3 run_bot.py promote-to-live --candidate-config-id <DEMO_CANDIDATE_ID> --demo-config config/config.demo.yaml --live-config config/config.live.yaml
+python3 run_bot.py promote-to-live ... --activate   # to make it active in Live
+python3 run_bot.py config show --config-id <live_imported_id> --config config/config.live.yaml
+
 # Stage 5: health, status, report (heartbeat from runtime loops)
 python3 run_bot.py health
 python3 run_bot.py health --heartbeat artifacts/heartbeat.json --stale-sec 300
+# Dual-instance: use instance-scoped paths, e.g. --config config/config.demo.yaml so heartbeat is artifacts/demo/heartbeat.json
 python3 run_bot.py status
 python3 run_bot.py status --heartbeat artifacts/heartbeat.json
 python3 run_bot.py report
