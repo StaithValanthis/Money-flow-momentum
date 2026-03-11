@@ -64,7 +64,7 @@ python run_bot.py promote-env --config config/config.live.yaml --env .env.live
 python run_bot.py promote-env --config config/config.live.yaml --env .env.live --confirm-live
 ```
 
-**Systemd (dual-instance):** Use `./scripts/install_systemd.sh --dual-instance` to install `money-flow-momentum-demo.service`, `money-flow-momentum-live.service`, and `money-flow-momentum-demo-automation.service` + `.timer`. Start demo and live separately; only enable/start the demo-automation timer for the Demo instance.
+**Systemd (dual-instance):** Use `./scripts/install_systemd.sh --dual-instance` to install `money-flow-momentum-demo.service`, `money-flow-momentum-live.service`, and `money-flow-momentum-demo-automation.service` + `.timer`. The script creates instance directories (`logs/demo`, `logs/live`, `data/demo`, `data/live`, `artifacts/demo`, `artifacts/live`) so the units can start. Start demo and live separately; only enable/start the demo-automation timer for the Demo instance.
 
 ---
 
@@ -262,7 +262,7 @@ Two units: **main trading bot** and **Demo orchestration timer**. Trading and or
 
 **Single-instance:** `./scripts/install_systemd.sh` (main + automation timer); use `--no-automation` to skip timer.
 
-**Dual-instance:** `./scripts/install_systemd.sh --dual-instance` installs `money-flow-momentum-demo.service`, `money-flow-momentum-live.service`, and `money-flow-momentum-demo-automation.service` + `.timer`. Only the Demo instance runs the automation timer; Live is trading-only.
+**Dual-instance:** `./scripts/install_systemd.sh --dual-instance` installs `money-flow-momentum-demo.service`, `money-flow-momentum-live.service`, and `money-flow-momentum-demo-automation.service` + `.timer`, and creates instance dirs (`logs/demo`, `logs/live`, etc.) so services can start. Only the Demo instance runs the automation timer; Live is trading-only.
 
 | Action | Command |
 |--------|---------|

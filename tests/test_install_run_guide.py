@@ -82,3 +82,13 @@ def test_automation_units_referenced_in_scripts():
     assert service_name in install and timer_name in install
     assert service_name in status and timer_name in status
     assert service_name in tail
+
+
+def test_dual_instance_install_ensures_log_dirs():
+    """install_systemd.sh --dual-instance ensures logs/demo and logs/live exist before start."""
+    root = Path(__file__).resolve().parents[1]
+    install = (root / "scripts" / "install_systemd.sh").read_text(encoding="utf-8")
+    assert "_ensure_dual_instance_dirs" in install
+    assert "logs/demo" in install
+    assert "logs/live" in install
+    assert "mkdir -p" in install

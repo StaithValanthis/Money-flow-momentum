@@ -38,7 +38,17 @@ _install_one() {
     fi
 }
 
+_ensure_dual_instance_dirs() {
+    echo "Creating instance log and runtime directories..."
+    mkdir -p "$REPO_ROOT/logs/demo" "$REPO_ROOT/logs/live"
+    touch "$REPO_ROOT/logs/demo/bot.log" "$REPO_ROOT/logs/live/bot.log" 2>/dev/null || true
+    mkdir -p "$REPO_ROOT/data/demo" "$REPO_ROOT/data/live"
+    mkdir -p "$REPO_ROOT/artifacts/demo" "$REPO_ROOT/artifacts/live"
+    echo "Created logs/demo, logs/live, data/demo, data/live, artifacts/demo, artifacts/live"
+}
+
 _install_dual() {
+    _ensure_dual_instance_dirs
     if [ "${1:-}" = "--user" ]; then
         UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
         mkdir -p "$UNIT_DIR"
