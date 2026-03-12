@@ -487,7 +487,7 @@ def test_parameter_aware_warm_start_evaluates_multiple_candidates(tmp_path: Path
 
     call_count = []
 
-    def _fake_candidate_search(baseline_config, candles, n_samples=15, min_trades_guardrail=5, require_profitable=True):
+    def _fake_candidate_search(baseline_config, candles, n_samples=15, min_trades_guardrail=5, require_profitable=True, max_runtime_seconds=None, start_time=None, **kwargs):
         call_count.append(1)
         from src.config.candidate_factory import build_config_from_params
         params = {"entry.long_threshold": 1.5, "entry.short_threshold": -1.5}
@@ -500,7 +500,8 @@ def test_parameter_aware_warm_start_evaluates_multiple_candidates(tmp_path: Path
             {"config_id": f"ws_{j}", "params": params, "oos_metrics": fake_metrics, "guardrail_passed": True, "reason_codes": [], "objective_score": 1.0}
             for j in range(num_candidates)
         ]
-        return {"params": params, "oos_metrics": fake_metrics, "config_id": "ws_0"}, all_results, {"candidates_invalid": 0, "candidates_replayed": num_candidates, "no_trades_reason": None}
+        meta = {"candidates_invalid": 0, "candidates_replayed": num_candidates, "no_trades_reason": None, "timeout_hit": False, "elapsed_seconds": 1.0, "candidate_count_requested": num_candidates}
+        return {"params": params, "oos_metrics": fake_metrics, "config_id": "ws_0"}, all_results, meta
 
     monkeypatch.setattr("src.warm_start.runner.run_warm_start_candidate_search", _fake_candidate_search)
 
@@ -574,7 +575,7 @@ def test_warm_start_report_includes_candidate_fields(tmp_path: Path, monkeypatch
     monkeypatch.setattr("src.warm_start.runner.BybitClient", lambda *a, **k: None, raising=False)
     monkeypatch.setattr("src.warm_start.runner.load_cached_candles", lambda a, s: {"BTCUSDT": candles})
 
-    def _fake_search(baseline_config, candles_by_symbol, n_samples=15, min_trades_guardrail=5, require_profitable=True):
+    def _fake_search(baseline_config, candles_by_symbol, n_samples=15, min_trades_guardrail=5, require_profitable=True, max_runtime_seconds=None, start_time=None, **kwargs):
         from src.config.candidate_factory import build_config_from_params
         params = {"entry.long_threshold": 1.5, "entry.short_threshold": -1.5}
         c = build_config_from_params(baseline_config, params)
@@ -585,8 +586,9 @@ def test_warm_start_report_includes_candidate_fields(tmp_path: Path, monkeypatch
             trades, _ = replay_strategy_from_candles(c, candles_by_symbol)
             paired = compute_realized_pnl_by_pairing(trades)
             metrics = compute_core_metrics(paired)
-            return {"params": params, "oos_metrics": metrics, "config_id": "ws_0"}, [{"config_id": "ws_0", "params": params, "oos_metrics": metrics}], {"candidates_invalid": 0, "candidates_replayed": 1, "no_trades_reason": None}
-        return None, [], {"candidates_invalid": 1, "candidates_replayed": 0, "no_trades_reason": None}
+            meta = {"candidates_invalid": 0, "candidates_replayed": 1, "no_trades_reason": None, "timeout_hit": False, "elapsed_seconds": 0.5, "candidate_count_requested": n_samples}
+            return {"params": params, "oos_metrics": metrics, "config_id": "ws_0"}, [{"config_id": "ws_0", "params": params, "oos_metrics": metrics}], meta
+        return None, [], {"candidates_invalid": 1, "candidates_replayed": 0, "no_trades_reason": None, "timeout_hit": False, "elapsed_seconds": 0.5, "candidate_count_requested": n_samples}
 
     monkeypatch.setattr("src.warm_start.runner.run_warm_start_candidate_search", _fake_search)
 
@@ -692,7 +694,14 @@ def test_warm_start_fallback_when_no_viable_candidate(tmp_path: Path, monkeypatc
     monkeypatch.setattr("src.warm_start.runner.load_cached_candles", lambda a, s: {"BTCUSDT": candles})
 
     def _fake_search_no_winner(*args, **kwargs):
-        return None, [], {"candidates_invalid": 0, "candidates_replayed": 5, "no_trades_reason": "all_replay_runs_produced_zero_trades"}
+        return None, [], {
+            "candidates_invalid": 0,
+            "candidates_replayed": 5,
+            "no_trades_reason": "all_replay_runs_produced_zero_trades",
+            "timeout_hit": False,
+            "elapsed_seconds": 1.5,
+            "candidate_count_requested": 8,
+        }
 
     monkeypatch.setattr("src.warm_start.runner.run_warm_start_candidate_search", _fake_search_no_winner)
 
@@ -705,4 +714,140 @@ def test_warm_start_fallback_when_no_viable_candidate(tmp_path: Path, monkeypatc
     assert result.get("success") is True
     assert result.get("seed_config_id") is not None
     assert result.get("no_trades_reason") is not None
+
+
+def test_warm_start_stops_when_runtime_budget_hit() -> None:
+    """Candidate search stops when max_runtime_seconds is exceeded and returns best-so-far in meta."""
+    import time
+    from src.warm_start.candidate_search import run_warm_start_candidate_search
+    from src.config.config import Config
+
+    cfg = Config()
+    cfg.operating_mode = "demo_research"
+    candles = {"BTCUSDT": [{"start_ts": 1000 + i * 60000, "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5} for i in range(15)]}
+    start = time.time() - 400  # already 400s "ago"
+    best, results, meta = run_warm_start_candidate_search(
+        cfg,
+        candles,
+        n_samples=20,
+        max_runtime_seconds=300,
+        start_time=start,
+    )
+    assert meta.get("timeout_hit") is True
+    assert meta.get("elapsed_seconds") is not None
+    assert meta.get("candidate_count_requested") == 20
+    assert meta.get("candidates_replayed", 0) <= 20
+
+
+def test_warm_start_report_includes_timeout_and_elapsed(tmp_path: Path, monkeypatch) -> None:
+    """Warm-start report includes timeout_hit, elapsed_seconds, candidate counts."""
+    db_path = tmp_path / "demo.db"
+    Database(str(db_path)).close()
+    run_stage3_migrations(str(db_path))
+
+    cfg = Config()
+    cfg.database_path = str(db_path)
+    cfg.operating_mode = "demo_research"
+    cfg.artifacts_root = str(tmp_path / "artifacts")
+    cfg.warm_start = WarmStartConfig(
+        enabled=True,
+        candle_source="local",
+        fallback_to_safe_seed_on_failure=True,
+    )
+    env = EnvSettings()
+    env.bybit_env = "demo"
+
+    def _fake_load_config(_path=None):
+        return cfg, env
+
+    candles = [{"start_ts": 1000 + i * 60000, "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5} for i in range(25)]
+    monkeypatch.setattr("src.warm_start.runner.load_config", _fake_load_config)
+    monkeypatch.setattr("src.warm_start.runner.resolve_bybit_credentials", lambda *a, **k: ("k", "s", False, "demo"), raising=False)
+    monkeypatch.setattr("src.warm_start.runner.BybitClient", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr("src.warm_start.runner.load_cached_candles", lambda a, s: {"BTCUSDT": candles})
+
+    def _fake_search_timeout_with_winner(*args, **kwargs):
+        from src.config.candidate_factory import build_config_from_params
+        params = {"entry.long_threshold": 1.5, "entry.short_threshold": -1.5}
+        c = build_config_from_params(cfg, params)
+        if c:
+            from src.evaluation.metrics import compute_core_metrics
+            metrics = {"trade_count": 10, "total_pnl": 50.0, "return_pct": 0.5, "max_drawdown": 0.1}
+            meta = {"candidates_invalid": 0, "candidates_replayed": 1, "no_trades_reason": None, "timeout_hit": True, "elapsed_seconds": 310.0, "candidate_count_requested": 8}
+            return {"params": params, "oos_metrics": metrics, "config_id": "ws_0"}, [{"config_id": "ws_0", "params": params, "oos_metrics": metrics}], meta
+        return None, [], {"candidates_invalid": 1, "candidates_replayed": 0, "timeout_hit": True, "elapsed_seconds": 310.0, "candidate_count_requested": 8}
+
+
+    monkeypatch.setattr("src.warm_start.runner.run_warm_start_candidate_search", _fake_search_timeout_with_winner)
+
+    run_warm_start_calibration(
+        demo_db_path=str(db_path),
+        config_path=None,
+        artifact_dir=tmp_path / "artifacts",
+    )
+    report_path = tmp_path / "artifacts" / "warm_start" / "warm_start_report.json"
+    assert report_path.exists()
+    import json
+    with open(report_path, encoding="utf-8") as f:
+        report = json.load(f)
+    assert "timeout_hit" in report
+    assert "elapsed_seconds" in report
+    assert "candidate_count_requested" in report
+    assert "candidate_count_evaluated" in report
+    assert "candidates_invalid" in report
+    assert "candidates_replayed" in report
+    assert "fallback_used" in report
+    assert "reason" in report
+
+
+def test_warm_start_returns_best_so_far_on_timeout(tmp_path: Path, monkeypatch) -> None:
+    """When runtime budget is hit, warm-start can still activate best acceptable candidate seen so far."""
+    db_path = tmp_path / "demo.db"
+    Database(str(db_path)).close()
+    run_stage3_migrations(str(db_path))
+
+    cfg = Config()
+    cfg.database_path = str(db_path)
+    cfg.operating_mode = "demo_research"
+    cfg.artifacts_root = str(tmp_path / "artifacts")
+    cfg.warm_start = WarmStartConfig(
+        enabled=True,
+        candle_source="local",
+        fallback_to_safe_seed_on_failure=True,
+    )
+    env = EnvSettings()
+    env.bybit_env = "demo"
+
+    def _fake_load_config(_path=None):
+        return cfg, env
+
+    candles = [{"start_ts": 1000 + i * 60000, "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5} for i in range(25)]
+    monkeypatch.setattr("src.warm_start.runner.load_config", _fake_load_config)
+    monkeypatch.setattr("src.warm_start.runner.resolve_bybit_credentials", lambda *a, **k: ("k", "s", False, "demo"), raising=False)
+    monkeypatch.setattr("src.warm_start.runner.BybitClient", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr("src.warm_start.runner.load_cached_candles", lambda a, s: {"BTCUSDT": candles})
+
+    def _fake_search_best_so_far_on_timeout(*args, **kwargs):
+        from src.config.candidate_factory import build_config_from_params
+        params = {"entry.long_threshold": 1.5, "entry.short_threshold": -1.5}
+        c = build_config_from_params(cfg, params)
+        if c:
+            metrics = {"trade_count": 12, "total_pnl": 80.0, "return_pct": 0.8, "max_drawdown": 0.1}
+            meta = {"candidates_invalid": 0, "candidates_replayed": 1, "no_trades_reason": None, "timeout_hit": True, "elapsed_seconds": 301.0, "candidate_count_requested": 8}
+            return {"params": params, "oos_metrics": metrics, "config_id": "ws_0"}, [{"config_id": "ws_0", "params": params, "oos_metrics": metrics, "guardrail_passed": True, "reason_codes": [], "objective_score": 1.0}], meta
+        return None, [], {"candidates_invalid": 0, "candidates_replayed": 0, "timeout_hit": True, "elapsed_seconds": 301.0, "candidate_count_requested": 8}
+
+    monkeypatch.setattr("src.warm_start.runner.run_warm_start_candidate_search", _fake_search_best_so_far_on_timeout)
+
+    result = run_warm_start_calibration(
+        demo_db_path=str(db_path),
+        config_path=None,
+        artifact_dir=tmp_path / "artifacts",
+    )
+    assert result.get("timeout_hit") is True
+    assert result.get("elapsed_seconds") is not None
+    if result.get("warm_start_used") and result.get("seed_config_id"):
+        assert result.get("reason") in ("warm_start_seeded", "warm_start_seeded_timeout_best_so_far")
+    else:
+        assert result.get("fallback_used") is True
 

@@ -138,17 +138,21 @@ def run_warm_start_calibration(
         "error": None,
         "engine": None,
         "engine_meta": {},
+        "candidate_count_requested": None,
         "candidate_count_evaluated": None,
         "best_candidate_config_id": None,
         "best_candidate_metrics": None,
         "candidates_invalid": None,
         "candidates_replayed": None,
         "no_trades_reason": None,
+        "timeout_hit": False,
+        "elapsed_seconds": None,
         "window_from_ts_ms": None,
         "window_to_ts_ms": None,
         "symbols": [],
         "timeframe": None,
     }
+    calibration_start = time.time()
 
     config, env = load_config(config_path)
     mode = get_effective_operating_mode(config, env)
@@ -169,6 +173,7 @@ def run_warm_start_calibration(
         result["skipped"] = True
         return result
 
+    log.info("Warm-start started (Demo-only)")
     artifact_dir = artifact_dir or Path(config.artifacts_root)
     to_ts_ms = int(time.time() * 1000)
     lookback_days = int(getattr(warm, "lookback_days", 30))
@@ -191,6 +196,7 @@ def run_warm_start_calibration(
             return result
         client = BybitClient(api_key=api_key, api_secret=api_secret, demo=True)
         symbols = _get_symbols_for_warm_start(config, client)
+        log.info("Warm-start universe resolved: %d symbols", len(symbols))
     except Exception as e:
         log.exception("Warm-start client/symbols")
         result["error"] = str(e)
@@ -219,10 +225,15 @@ def run_warm_start_calibration(
                 log.debug(f"Fetch klines {symbol}: {e}")
         if candles_by_symbol:
             save_candles_cache(config.artifacts_root, candles_by_symbol)
+            log.info("Warm-start candles fetched: %d symbols", len(candles_by_symbol))
+    if candles_by_symbol:
+        log.info("Warm-start candles ready: %d symbols", len(candles_by_symbol))
 
     if not candles_by_symbol:
         result["reason"] = "no_candle_data"
+        result["elapsed_seconds"] = round(time.time() - calibration_start, 2)
         if fallback:
+            log.info("Warm-start fallback: no candle data; activating conservative seed")
             _apply_fallback_seed(demo_db_path, config, artifact_dir, result)
         return result
 
@@ -232,8 +243,10 @@ def run_warm_start_calibration(
     result["timeframe"] = interval
 
     baseline_config = config
-    n_samples = int(getattr(warm, "n_samples", 15))
+    n_samples = int(getattr(warm, "n_samples", 8))
+    max_runtime_seconds = int(getattr(warm, "max_runtime_seconds", 300) or 0) or None
 
+    log.info("Warm-start candidate search started (n_samples=%s, max_runtime_seconds=%s)", n_samples, max_runtime_seconds)
     # --- Primary path: parameter-aware replay (evaluate each candidate via replay on candles) ---
     try:
         best, all_results, search_meta = run_warm_start_candidate_search(
@@ -242,11 +255,20 @@ def run_warm_start_calibration(
             n_samples=n_samples,
             min_trades_guardrail=5,
             require_profitable=require_profitable,
+            max_runtime_seconds=max_runtime_seconds,
+            start_time=calibration_start,
         )
+        result["candidate_count_requested"] = search_meta.get("candidate_count_requested", n_samples)
         result["candidates_invalid"] = search_meta.get("candidates_invalid")
         result["candidates_replayed"] = search_meta.get("candidates_replayed")
+        result["candidate_count_evaluated"] = search_meta.get("candidates_replayed")
         result["no_trades_reason"] = search_meta.get("no_trades_reason")
+        result["timeout_hit"] = search_meta.get("timeout_hit", False)
+        result["elapsed_seconds"] = search_meta.get("elapsed_seconds")
+        if result["elapsed_seconds"] is None:
+            result["elapsed_seconds"] = round(time.time() - calibration_start, 2)
         if best is not None:
+            log.info("Warm-start best candidate selected (score from replay); activating seed")
             winning_config = build_config_from_params(baseline_config, best["params"])
             if winning_config:
                 run_stage3_migrations(demo_db_path)
@@ -285,11 +307,15 @@ def run_warm_start_calibration(
                     result["best_candidate_metrics"] = best.get("oos_metrics")
                     result["fallback_used"] = False
                     result["trade_count_synthetic"] = int((best.get("oos_metrics") or {}).get("trade_count") or 0)
+                    if result.get("timeout_hit"):
+                        result["reason"] = "warm_start_seeded_timeout_best_so_far"
+                    log.info("Warm-start final seed activated: config_id=%s", new_id)
                     _write_warm_start_artifact(artifact_dir, result, config)
                     return result
     except Exception as e:
-        log.debug("Parameter-aware warm-start failed, falling back to single-replay path: %s", e)
+        log.warning("Parameter-aware warm-start failed, falling back to single-replay path: %s", e)
         result["error"] = str(e)
+        result["reason"] = "parameter_aware_failed_fallback"
 
     # --- Fallback: single replay + temp DB optimizer (legacy path) ---
     try:
@@ -313,9 +339,11 @@ def run_warm_start_calibration(
         result["no_trades_reason"] = "single_replay_produced_zero_trades"
 
     if result["trade_count_synthetic"] < 20:
-        log.warning("Very few synthetic trades; calibration may be weak")
+        log.warning("Warm-start fallback: very few synthetic trades; calibration weak")
         result["reason"] = "insufficient_synthetic_trades"
+        result["elapsed_seconds"] = round(time.time() - calibration_start, 2)
         if fallback:
+            log.info("Warm-start fallback: activating conservative seed")
             _apply_fallback_seed(demo_db_path, config, artifact_dir, result)
         return result
 
@@ -424,7 +452,9 @@ def run_warm_start_calibration(
         else:
             result["reason"] = result.get("reason") or "no_acceptable_candidate"
 
+    result["elapsed_seconds"] = round(time.time() - calibration_start, 2)
     if fallback:
+        log.info("Warm-start fallback: no acceptable candidate; activating conservative seed (reason=%s)", result.get("reason"))
         _apply_fallback_seed(demo_db_path, config, artifact_dir, result)
     return result
 

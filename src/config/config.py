@@ -340,12 +340,13 @@ class WarmStartConfig(BaseModel):
     auto_seed_demo_on_fresh_install: bool = True
     min_local_trades_to_skip_warm_start: int = Field(default=50, ge=0, le=10000)
     candle_source: str = Field(default="exchange", pattern="^(local|exchange|local_or_exchange)$")
-    lookback_days: int = Field(default=30, ge=1, le=365)
+    lookback_days: int = Field(default=7, ge=1, le=365, description="Days of candle history for warm-start (default 7 for VM startup)")
     timeframe: str = Field(default="5", description="Bybit interval: 1, 3, 5, 15, 30, 60, D, W, M")
-    symbols_limit: int = Field(default=50, ge=1, le=200)
+    symbols_limit: int = Field(default=10, ge=1, le=200, description="Max symbols for warm-start (default 10 for bounded runtime)")
     require_profitable_seed: bool = True
     fallback_to_safe_seed_on_failure: bool = True
-    n_samples: int = Field(default=15, ge=5, le=100, description="Number of candidate parameter sets to replay-evaluate during warm-start")
+    n_samples: int = Field(default=8, ge=3, le=100, description="Candidate parameter sets to replay-evaluate (default 8 for VM startup)")
+    max_runtime_seconds: int = Field(default=300, ge=30, le=3600, description="Hard limit: stop candidate search and use best-so-far or fallback")
 
 
 class LoggingConfig(BaseModel):
