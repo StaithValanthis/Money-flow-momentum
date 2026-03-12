@@ -43,6 +43,16 @@ python run_bot.py validate --config config/config.demo.yaml
 python run_bot.py validate --config config/config.live.yaml
 ```
 
+**Warm-start (Demo only):** When starting a **fresh Demo** instance (no or few local trades), warm-start calibration can seed the Demo active config from historical candles before first trading. Enable in config with `warm_start.enabled: true` and `warm_start.auto_seed_demo_on_fresh_install: true`. The script `./scripts/start_demo_research.sh` runs a warm-start check automatically before starting the bot. To run or inspect manually:
+
+```bash
+python run_bot.py warm-start run --config config/config.demo.yaml   # run calibration (skipped if Demo has enough trades)
+python run_bot.py warm-start status --config config/config.demo.yaml # show enabled, needed, last seed, fallback
+python run_bot.py show-runtime-mode --config config/config.demo.yaml # includes warm_start_enabled, warm_start_last_seed
+```
+
+If warm-start cannot produce a viable seed (e.g. no candle data or no profitable candidate), it can activate a **conservative fallback** config when `warm_start.fallback_to_safe_seed_on_failure: true`. Report is written to `artifacts/demo/warm_start/warm_start_report.json`. **Live is never affected.**
+
 **Start (scripts):**
 ```bash
 ./scripts/start_demo_research.sh    # Demo research

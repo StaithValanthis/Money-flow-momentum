@@ -15,7 +15,7 @@ CONFIG_STATUSES = frozenset({
     "baseline", "candidate", "staged", "active", "rejected", "rolled_back", "archived",
 })
 CONFIG_SOURCES = frozenset({
-    "manual", "optimizer", "shadow", "rollback", "bootstrap", "demo_import",
+    "manual", "optimizer", "shadow", "rollback", "bootstrap", "demo_import", "warm_start",
 })
 
 

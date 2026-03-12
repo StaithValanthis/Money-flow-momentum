@@ -22,6 +22,9 @@ if [ ! -f "$CONFIG" ]; then
     exit 1
 fi
 python run_bot.py validate --config "$CONFIG" || exit 1
+# Warm-start: if fresh/insufficient Demo data, calibrate from historical candles and seed Demo before first trading (Demo-only).
+echo "=== Warm-start check (Demo-only) ==="
+python run_bot.py warm-start run --config "$CONFIG" || true
 if [ "$FOREGROUND" = "1" ]; then
     exec python run_bot.py run --config "$CONFIG"
 fi

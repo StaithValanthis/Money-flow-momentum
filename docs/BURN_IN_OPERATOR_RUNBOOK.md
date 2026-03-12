@@ -11,6 +11,8 @@ Set `operating_mode: demo_research` or `operating_mode: live_guarded` in config.
 
 Workflow: install → validate → **demo_research** (start Demo, check burn-in, readiness) → when ready, **promote environment** (Demo→Live) and **live_guarded** (check small-live readiness, start guarded live) → incident stop/rollback as needed.
 
+**Warm-start (Demo only):** On a **fresh Demo** install (no or insufficient local trade data), the system can run a **warm-start calibration** before first trading: it uses historical candle data to run an optimization pass and activate a seed config for Demo. This is **Demo-only**; Live is never auto-seeded. Enable with `warm_start.enabled: true` in config. The script `./scripts/start_demo_research.sh` runs a warm-start check automatically. To run or inspect: `python run_bot.py warm-start run --config config/config.demo.yaml`, `python run_bot.py warm-start status --config config/config.demo.yaml`. See [docs/INSTALL_AND_RUN_GUIDE.md](INSTALL_AND_RUN_GUIDE.md) for full commands.
+
 **Canonical reference:** For a single consolidated install and run sequence, see **[docs/INSTALL_AND_RUN_GUIDE.md](INSTALL_AND_RUN_GUIDE.md)**.
 
 ## Prerequisites

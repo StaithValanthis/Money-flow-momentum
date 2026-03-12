@@ -74,6 +74,27 @@ def _get_nested(d: dict, path: str) -> Any:
     return d
 
 
+def build_config_from_params(parent_config: Config, param_overrides: dict[str, Any]) -> Optional[Config]:
+    """
+    Build a Config from parent with only approved keys in param_overrides.
+    Does not register in DB. Returns None if invalid.
+    """
+    from copy import deepcopy
+    invalid = set(param_overrides.keys()) - APPROVED_PARAM_PATHS
+    overrides = {k: v for k, v in param_overrides.items() if k in APPROVED_PARAM_PATHS}
+    if invalid:
+        log.debug(f"build_config_from_params ignoring non-approved: {invalid}")
+    d = parent_config.model_dump(mode="json")
+    for path, value in overrides.items():
+        if path in APPROVED_PARAM_PATHS:
+            _set_nested(d, path, value)
+    try:
+        return Config.model_validate(d)
+    except Exception as e:
+        log.debug(f"build_config_from_params validation: {e}")
+        return None
+
+
 def generate_candidate(
     parent_config: Config,
     param_overrides: dict[str, Any],

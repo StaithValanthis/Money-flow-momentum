@@ -622,6 +622,15 @@ def register_stage3_cli(app: typer.Typer) -> None:
         aid = get_active_config_id(config.database_path)
         typer.echo(f"active_config_id: {aid or 'none'}")
         typer.echo(f"active_strategy: {getattr(config, 'active_strategy', 'flow_impulse')}")
+        if operating_mode == "demo_research":
+            from src.warm_start import get_warm_start_status
+            ws = get_warm_start_status(config.database_path, config_path)
+            typer.echo(f"warm_start_enabled: {ws.get('warm_start_enabled', False)}")
+            typer.echo(f"warm_start_needed: {ws.get('warm_start_needed', False)}")
+            if ws.get("last_warm_start_report"):
+                r = ws["last_warm_start_report"]
+                typer.echo(f"warm_start_last_seed: {r.get('seed_config_id') or 'none'}")
+                typer.echo(f"warm_start_fallback_used: {r.get('fallback_used', False)}")
         if is_legacy:
             typer.echo("WARN: Using legacy single-key. Set BYBIT_DEMO_API_KEY/SECRET and BYBIT_LIVE_API_KEY/SECRET for dual-key.")
         if operating_mode == "live_guarded" and env_type != "live":
@@ -815,6 +824,15 @@ def register_stage3_cli(app: typer.Typer) -> None:
         aid = get_active_config_id(config.database_path)
         typer.echo(f"Active config: {aid or 'none'}")
         typer.echo(f"Database: {config.database_path}")
+        if operating_mode == "demo_research":
+            from src.warm_start import get_warm_start_status
+            ws = get_warm_start_status(config.database_path, config_path)
+            typer.echo(f"warm_start_enabled: {ws.get('warm_start_enabled', False)}")
+            typer.echo(f"warm_start_needed: {ws.get('warm_start_needed', False)}")
+            if ws.get("last_warm_start_report"):
+                r = ws["last_warm_start_report"]
+                typer.echo(f"warm_start_seed_config_id: {r.get('seed_config_id') or 'none'}")
+                typer.echo(f"warm_start_fallback_used: {r.get('fallback_used', False)}")
         typer.echo(f"Stage 5: {getattr(config, 'stage5_enabled', False)}")
         typer.echo(f"Strategy: {getattr(config, 'active_strategy', 'flow_impulse')}")
         art_root = Path(config.artifacts_root)
@@ -989,6 +1007,50 @@ def register_stage3_cli(app: typer.Typer) -> None:
         db.close()
 
     app.add_typer(burnin_app, name="burnin")
+
+    # --- Warm-start (Demo-only: historical candle calibration before first trading) ---
+    warm_start_app = typer.Typer(help="Demo warm-start: calibrate from historical candles before first trading")
+    @warm_start_app.command("run")
+    def warm_start_run_cmd(
+        config_path: Optional[Path] = typer.Option(None, "--config", "-c"),
+    ) -> None:
+        """Run warm-start calibration (fetch candles, optimize, seed Demo). Demo-only; no Live impact."""
+        from src.warm_start import run_warm_start_calibration
+        config, _ = load_config(config_path)
+        result = run_warm_start_calibration(
+            demo_db_path=config.database_path,
+            config_path=config_path,
+            artifact_dir=Path(config.artifacts_root),
+        )
+        if result.get("skipped"):
+            typer.echo(f"Warm-start skipped: {result.get('reason')}")
+            raise typer.Exit(0)
+        if result.get("error"):
+            typer.echo(f"Warm-start error: {result.get('error')}")
+        typer.echo(f"success: {result.get('success')}  reason: {result.get('reason')}")
+        typer.echo(f"seed_config_id: {result.get('seed_config_id') or 'none'}")
+        typer.echo(f"fallback_used: {result.get('fallback_used', False)}")
+        typer.echo(f"warm_start_used: {result.get('warm_start_used', False)}")
+        raise typer.Exit(0 if result.get("success") else 1)
+    @warm_start_app.command("status")
+    def warm_start_status_cmd(
+        config_path: Optional[Path] = typer.Option(None, "--config", "-c"),
+    ) -> None:
+        """Show warm-start status: enabled, needed, last seed, fallback."""
+        from src.warm_start import get_warm_start_status
+        config, _ = load_config(config_path)
+        ws = get_warm_start_status(config.database_path, config_path)
+        typer.echo(f"operating_mode: {ws.get('operating_mode')}")
+        typer.echo(f"warm_start_enabled: {ws.get('warm_start_enabled')}")
+        typer.echo(f"warm_start_applies: {ws.get('warm_start_applies')}")
+        typer.echo(f"warm_start_needed: {ws.get('warm_start_needed')}")
+        typer.echo(f"reason: {ws.get('reason')}")
+        typer.echo(f"active_config_id: {ws.get('active_config_id') or 'none'}")
+        if ws.get("last_warm_start_report"):
+            r = ws["last_warm_start_report"]
+            typer.echo(f"last_seed_config_id: {r.get('seed_config_id') or 'none'}")
+            typer.echo(f"last_fallback_used: {r.get('fallback_used', False)}")
+    app.add_typer(warm_start_app, name="warm-start")
 
     # --- Automation / orchestration ---
     automation_app = typer.Typer(help="Demo automation / orchestration status and control")
