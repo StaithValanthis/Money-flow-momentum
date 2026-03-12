@@ -141,6 +141,9 @@ def run_warm_start_calibration(
         "candidate_count_evaluated": None,
         "best_candidate_config_id": None,
         "best_candidate_metrics": None,
+        "candidates_invalid": None,
+        "candidates_replayed": None,
+        "no_trades_reason": None,
         "window_from_ts_ms": None,
         "window_to_ts_ms": None,
         "symbols": [],
@@ -233,13 +236,16 @@ def run_warm_start_calibration(
 
     # --- Primary path: parameter-aware replay (evaluate each candidate via replay on candles) ---
     try:
-        best, all_results = run_warm_start_candidate_search(
+        best, all_results, search_meta = run_warm_start_candidate_search(
             baseline_config,
             candles_by_symbol,
             n_samples=n_samples,
             min_trades_guardrail=5,
             require_profitable=require_profitable,
         )
+        result["candidates_invalid"] = search_meta.get("candidates_invalid")
+        result["candidates_replayed"] = search_meta.get("candidates_replayed")
+        result["no_trades_reason"] = search_meta.get("no_trades_reason")
         if best is not None:
             winning_config = build_config_from_params(baseline_config, best["params"])
             if winning_config:
@@ -266,6 +272,9 @@ def run_warm_start_calibration(
                         "candidate_count_evaluated": len(all_results),
                         "best_candidate_config_id": new_id,
                         "best_candidate_metrics": best.get("oos_metrics"),
+                        "candidates_invalid": search_meta.get("candidates_invalid"),
+                        "candidates_replayed": search_meta.get("candidates_replayed"),
+                        "no_trades_reason": search_meta.get("no_trades_reason"),
                         "window_from_ts_ms": from_ts_ms,
                         "window_to_ts_ms": to_ts_ms,
                         "symbols": result["symbols"],
@@ -298,6 +307,10 @@ def run_warm_start_calibration(
 
     result["trade_count_synthetic"] = len([t for t in synthetic_trades if t.get("pnl") is not None])
     result["candidate_count_evaluated"] = 0
+    result["candidates_invalid"] = 0
+    result["candidates_replayed"] = 0
+    if result["trade_count_synthetic"] == 0:
+        result["no_trades_reason"] = "single_replay_produced_zero_trades"
 
     if result["trade_count_synthetic"] < 20:
         log.warning("Very few synthetic trades; calibration may be weak")

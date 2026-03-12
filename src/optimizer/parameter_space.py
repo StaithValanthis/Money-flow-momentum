@@ -2,6 +2,12 @@
 
 from typing import Any, Iterator
 
+# Param paths that must be integers when applied to config (sampling produces ints)
+INTEGER_PARAM_KEYS = frozenset({
+    "entry.max_positions_per_cluster",
+    "stop_tp.time_stop_bars",
+})
+
 
 class ParameterSpace:
     """Defines bounds and optional discrete choices for optimizable params."""
@@ -11,7 +17,7 @@ class ParameterSpace:
         self.discrete = discrete or {}
 
     def sample_random(self, n: int, rng: Any = None) -> list[dict[str, Any]]:
-        """Sample n random points (continuous params in bounds)."""
+        """Sample n random points (continuous params in bounds). Integer keys are sampled as ints."""
         import random
         if rng is not None:
             rng = rng
@@ -24,7 +30,11 @@ class ParameterSpace:
                 if k in self.discrete:
                     point[k] = rng.choice(self.discrete[k])
                 else:
-                    point[k] = lo + (hi - lo) * rng.random()
+                    val = lo + (hi - lo) * rng.random()
+                    if k in INTEGER_PARAM_KEYS:
+                        val = int(round(val))
+                        val = max(int(lo), min(int(hi), val))
+                    point[k] = val
             out.append(point)
         return out
 

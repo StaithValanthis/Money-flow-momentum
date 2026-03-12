@@ -30,29 +30,36 @@ def run_warm_start_candidate_search(
     n_samples: int = 15,
     min_trades_guardrail: int = 5,
     require_profitable: bool = True,
-) -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]]]:
+) -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Any]]:
     """
     Sample candidate parameter sets, replay strategy on candles for each,
-    compute metrics and guardrails, select best. Returns (best_result, all_results).
+    compute metrics and guardrails, select best. Returns (best_result, all_results, meta).
 
     best_result is None if no candidate passes guardrails or is profitable (when required).
+    meta includes candidates_invalid, candidates_replayed, no_trades_reason (if all replays yielded 0 trades).
     """
     if not candles_by_symbol:
-        return None, []
+        return None, [], {"candidates_invalid": 0, "candidates_replayed": 0, "no_trades_reason": "no_candles"}
 
     space = get_bounded_space(stage4=True, stage5=True)
     param_samples = space.sample_random(n_samples)
     results: List[Dict[str, Any]] = []
+    candidates_invalid = 0
+    replay_trade_counts: List[int] = []
 
     for i, params in enumerate(param_samples):
         candidate_config = build_config_from_params(baseline_config, params)
         if not candidate_config:
+            candidates_invalid += 1
             continue
         try:
-            trades, _ = replay_strategy_from_candles(candidate_config, candles_by_symbol)
+            trades, replay_meta = replay_strategy_from_candles(candidate_config, candles_by_symbol)
         except Exception as e:
             log.debug(f"Warm-start replay candidate {i}: {e}")
+            candidates_invalid += 1
             continue
+        trade_count = replay_meta.get("trade_count", 0) or len([t for t in trades if t.get("pnl") is not None])
+        replay_trade_counts.append(trade_count)
         paired = compute_realized_pnl_by_pairing(trades)
         metrics = compute_core_metrics(paired)
         gr = check_guardrails(
@@ -84,4 +91,16 @@ def run_warm_start_candidate_search(
         total_pnl = float((best.get("oos_metrics") or {}).get("total_pnl") or 0)
         if total_pnl <= 0:
             best = None
-    return best, results
+
+    no_trades_reason = None
+    if replay_trade_counts and max(replay_trade_counts) == 0:
+        no_trades_reason = "all_replay_runs_produced_zero_trades"
+    elif not results and candidates_invalid == len(param_samples):
+        no_trades_reason = "all_candidates_invalid_or_replay_failed"
+
+    meta = {
+        "candidates_invalid": candidates_invalid,
+        "candidates_replayed": len(results),
+        "no_trades_reason": no_trades_reason,
+    }
+    return best, results, meta

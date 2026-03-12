@@ -59,6 +59,14 @@ APPROVED_PARAM_PATHS = frozenset({
     "portfolio_exposure.same_direction_concentration_penalty_pct",
 })
 
+# Config paths that must be integers (coerce when applying sampled params)
+INTEGER_PARAM_PATHS = frozenset({
+    "entry.max_positions_per_cluster",
+    "stop_tp.time_stop_bars",
+    "risk.reentry_cooldown_seconds",
+    "risk.symbol_cooldown_after_stop_seconds",
+})
+
 
 def _set_nested(d: dict, path: str, value: Any) -> None:
     parts = path.split(".")
@@ -87,6 +95,11 @@ def build_config_from_params(parent_config: Config, param_overrides: dict[str, A
     d = parent_config.model_dump(mode="json")
     for path, value in overrides.items():
         if path in APPROVED_PARAM_PATHS:
+            if path in INTEGER_PARAM_PATHS and value is not None:
+                try:
+                    value = int(round(float(value)))
+                except (TypeError, ValueError):
+                    pass
             _set_nested(d, path, value)
     try:
         return Config.model_validate(d)
@@ -124,6 +137,11 @@ def generate_candidate(
     d = parent_config.model_dump(mode="json")
     for path, value in param_overrides.items():
         if path in APPROVED_PARAM_PATHS:
+            if path in INTEGER_PARAM_PATHS and value is not None:
+                try:
+                    value = int(round(float(value)))
+                except (TypeError, ValueError):
+                    pass
             _set_nested(d, path, value)
 
     try:

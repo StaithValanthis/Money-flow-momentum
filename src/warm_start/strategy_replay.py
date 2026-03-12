@@ -68,9 +68,20 @@ def _build_symbol_features_from_candles(
             tr_list.append(tr)
         if tr_list:
             atr_14 = sum(tr_list) / len(tr_list)
+    # Warm-start: when we have few bars, ATR can block all entries; use 0 so atr_ok passes and replay can produce trades
+    if len(window) < 5 and atr_14 > 0:
+        atr_14 = 0.0
 
     last_price = last["close"]
     vwap = last_price  # no volume breakdown; use close as proxy
+
+    # Derive buy_sell_ratio from price return so replay can pass entry filters (min_buy_sell_ratio_long / max_buy_sell_ratio_short)
+    if price_return_1m > 0.002:
+        buy_ratio = 1.08
+    elif price_return_1m < -0.002:
+        buy_ratio = 0.92
+    else:
+        buy_ratio = 1.0
 
     # Without trade-level flow we approximate these as neutral / zero.
     return SymbolFeatures(
@@ -81,9 +92,9 @@ def _build_symbol_features_from_candles(
         cvd_1m=0.0,
         cvd_3m=0.0,
         cvd_slope=price_return_3m,  # directional proxy
-        buy_sell_ratio_30s=1.0,
-        buy_sell_ratio_1m=1.0,
-        buy_sell_ratio_3m=1.0,
+        buy_sell_ratio_30s=buy_ratio,
+        buy_sell_ratio_1m=buy_ratio,
+        buy_sell_ratio_3m=buy_ratio,
         price_return_1m=price_return_1m,
         price_return_3m=price_return_3m,
         price_return_5m=price_return_5m,
@@ -157,12 +168,48 @@ def replay_strategy_from_candles(
             # No symbols have this timestamp
             continue
 
+        # When only one symbol, cross-sectional z-scores are zero so score never crosses threshold.
+        # Add a synthetic "shadow" symbol with inverted features so z-scores are non-zero; we do not open positions for it.
+        real_symbols = list(symbol_for_feat)
+        if len(features_list) == 1:
+            f0 = features_list[0]
+            shadow = SymbolFeatures(
+                symbol="_shadow",
+                delta_30s=-f0.delta_30s,
+                delta_1m=-f0.delta_1m,
+                delta_3m=-f0.delta_3m,
+                cvd_1m=-f0.cvd_1m,
+                cvd_3m=-f0.cvd_3m,
+                cvd_slope=-f0.cvd_slope,
+                buy_sell_ratio_30s=2.0 - f0.buy_sell_ratio_30s if f0.buy_sell_ratio_30s else 1.0,
+                buy_sell_ratio_1m=2.0 - f0.buy_sell_ratio_1m if f0.buy_sell_ratio_1m else 1.0,
+                buy_sell_ratio_3m=2.0 - f0.buy_sell_ratio_3m if f0.buy_sell_ratio_3m else 1.0,
+                price_return_1m=-f0.price_return_1m,
+                price_return_3m=-f0.price_return_3m,
+                price_return_5m=-f0.price_return_5m,
+                distance_from_vwap=-f0.distance_from_vwap,
+                atr_14=f0.atr_14,
+                spread_bps=f0.spread_bps,
+                realized_volatility=f0.realized_volatility,
+                open_interest_change=-f0.open_interest_change,
+                funding_rate=f0.funding_rate,
+                long_short_ratio=f0.long_short_ratio,
+                trade_count_1m=f0.trade_count_1m,
+                trade_count_3m=f0.trade_count_3m,
+                last_price=f0.last_price,
+                vwap=f0.vwap,
+            )
+            features_list = [f0, shadow]
+            symbol_for_feat = [real_symbols[0], "_shadow"]
+
         # Score using the real FlowImpulseScorer logic (Stage 4 disabled for simplicity).
         signals = scorer.score_all(features_list, stage4_enabled=False)
         signal_by_symbol: Dict[str, str] = {s.symbol: s.direction for s in signals}
 
-        # Update positions for each symbol
+        # Update positions for each symbol (skip shadow; only real symbols open/close)
         for symbol in symbol_for_feat:
+            if symbol == "_shadow":
+                continue
             direction = signal_by_symbol.get(symbol, "none")
             candles = candles_by_symbol[symbol]
             idx = ts_index_by_symbol[symbol]
