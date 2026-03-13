@@ -334,6 +334,7 @@ class WarmStartConfig(BaseModel):
     """
     Demo-only warm-start: seed Demo from historical candle calibration before first trading.
     Ignored when operating_mode != demo_research. Never touches Live.
+    Seed acceptance thresholds apply only to warm-start replay winner before Demo activation.
     """
 
     enabled: bool = True
@@ -347,6 +348,24 @@ class WarmStartConfig(BaseModel):
     fallback_to_safe_seed_on_failure: bool = True
     n_samples: int = Field(default=8, ge=3, le=100, description="Candidate parameter sets to replay-evaluate (default 8 for VM startup)")
     max_runtime_seconds: int = Field(default=300, ge=30, le=3600, description="Hard limit: stop candidate search and use best-so-far or fallback")
+
+    # Seed acceptance (Demo-only): replay winner must pass these before auto-activation
+    min_replay_trade_count: int = Field(default=30, ge=1, le=10000, description="Min closed trades in replay to accept seed")
+    min_win_rate: float = Field(default=0.18, ge=0.0, le=1.0, description="Min win rate to accept seed")
+    min_profit_factor: float = Field(default=1.10, ge=1.0, le=10.0, description="Min profit factor to accept seed")
+    min_payoff_ratio: float = Field(default=1.20, ge=0.0, le=20.0, description="Min payoff ratio (avg_win/|avg_loss|) to accept seed")
+    max_replay_drawdown: float = Field(default=10.0, ge=0.0, le=100.0, description="Max replay drawdown % to accept seed")
+    min_median_trade_duration_sec: float = Field(default=120.0, ge=0.0, le=86400.0, description="Min median trade duration (entry->exit) seconds")
+    ultra_short_duration_sec: float = Field(default=60.0, ge=0.0, le=600.0, description="Trades shorter than this are 'ultra-short' for churn checks")
+    max_ultra_short_trade_fraction: float = Field(default=0.25, ge=0.0, le=1.0, description="Max fraction of trades that may be ultra-short")
+    reject_zero_fee_zero_slippage_only_edges: bool = Field(
+        default=True,
+        description="When replay has no fees/slippage, reject if edge is razor-thin (require min margin above breakeven)",
+    )
+    min_profit_margin_pct_when_zero_fee: float = Field(
+        default=0.5, ge=0.0, le=50.0,
+        description="When reject_zero_fee_zero_slippage_only_edges: min return_pct required when fees/slippage are zero",
+    )
 
 
 class LoggingConfig(BaseModel):

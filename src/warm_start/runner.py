@@ -36,6 +36,8 @@ from src.warm_start.candles import (
 )
 from src.warm_start.strategy_replay import replay_strategy_from_candles
 from src.warm_start.candidate_search import run_warm_start_candidate_search
+from src.warm_start.acceptance import passes_warm_start_seed_acceptance
+from src.evaluation.datasets import get_trade_durations_sec
 from src.config.candidate_factory import build_config_from_params
 from src.exchange.bybit_client import BybitClient
 
@@ -151,6 +153,14 @@ def run_warm_start_calibration(
         "window_to_ts_ms": None,
         "symbols": [],
         "timeframe": None,
+        "seed_acceptance_passed": None,
+        "seed_rejection_reason": None,
+        "seed_acceptance_checks": None,
+        "ultra_short_trade_fraction": None,
+        "median_trade_duration_sec": None,
+        "profit_factor": None,
+        "payoff_ratio": None,
+        "max_drawdown": None,
     }
     calibration_start = time.time()
 
@@ -268,9 +278,49 @@ def run_warm_start_calibration(
         if result["elapsed_seconds"] is None:
             result["elapsed_seconds"] = round(time.time() - calibration_start, 2)
         if best is not None:
-            log.info("Warm-start best candidate selected (score from replay); activating seed")
             winning_config = build_config_from_params(baseline_config, best["params"])
             if winning_config:
+                # Strict seed acceptance: replay winner must pass quality/realism checks before Demo activation
+                try:
+                    winner_trades, _ = replay_strategy_from_candles(winning_config, candles_by_symbol)
+                    durations_sec = get_trade_durations_sec(winner_trades)
+                except Exception as e:
+                    log.warning("Warm-start re-replay for acceptance failed: %s", e)
+                    durations_sec = []
+                metrics = best.get("oos_metrics") or {}
+                accepted, rejection_reason, acceptance_checks = passes_warm_start_seed_acceptance(
+                    metrics,
+                    config,
+                    durations_sec=durations_sec,
+                    fees_summary=float(metrics.get("fees_summary") or 0),
+                    slippage_summary=float(metrics.get("slippage_summary") or 0),
+                )
+                result["seed_acceptance_checks"] = acceptance_checks
+                result["ultra_short_trade_fraction"] = acceptance_checks.get("ultra_short_trade_fraction")
+                result["median_trade_duration_sec"] = acceptance_checks.get("median_trade_duration_sec")
+                result["profit_factor"] = acceptance_checks.get("profit_factor")
+                result["payoff_ratio"] = acceptance_checks.get("payoff_ratio")
+                result["max_drawdown"] = acceptance_checks.get("max_drawdown")
+
+                if not accepted:
+                    result["seed_acceptance_passed"] = False
+                    result["seed_rejection_reason"] = rejection_reason
+                    result["reason"] = "seed_rejected_by_acceptance"
+                    result["best_candidate_config_id"] = None
+                    result["best_candidate_metrics"] = metrics
+                    result["candidate_count_evaluated"] = len(all_results)
+                    result["engine"] = "parameter_aware_replay"
+                    result["elapsed_seconds"] = round(time.time() - calibration_start, 2)
+                    log.info("Warm-start replay winner rejected by seed acceptance: %s", rejection_reason)
+                    if fallback:
+                        log.info("Warm-start fallback: replay winner rejected; activating conservative seed")
+                        _apply_fallback_seed(demo_db_path, config, artifact_dir, result)
+                    _write_warm_start_artifact(artifact_dir, result, config)
+                    return result
+
+                result["seed_acceptance_passed"] = True
+                result["seed_rejection_reason"] = None
+                log.info("Warm-start best candidate selected and passed seed acceptance; activating seed")
                 run_stage3_migrations(demo_db_path)
                 demo_artifact_dir = Path(artifact_dir) / "configs"
                 demo_artifact_dir.mkdir(parents=True, exist_ok=True)

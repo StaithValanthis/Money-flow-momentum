@@ -90,6 +90,69 @@ def compute_realized_pnl_by_pairing(trades: list[dict]) -> list[dict]:
     return out
 
 
+def get_trade_durations_sec(trades: list[dict]) -> list[float]:
+    """
+    Pair entry/exit rows per symbol (FIFO) and return list of trade durations in seconds
+    (exit_ts - entry_ts for each fully closed position). Used for warm-start acceptance
+    (median duration, ultra-short fraction).
+    """
+    if not trades:
+        return []
+    ts_key = lambda r: int(r.get("ts") or 0)
+    by_symbol: dict[str, list[tuple[int, dict]]] = defaultdict(list)
+    for i, t in enumerate(trades):
+        by_symbol[t.get("symbol") or ""].append((i, t))
+
+    durations: list[float] = []
+    for symbol, indexed in by_symbol.items():
+        if not symbol:
+            continue
+        indexed.sort(key=lambda x: ts_key(x[1]))
+        entry_queue_long: list[tuple[float, float, int]] = []  # (qty_left, price, entry_ts)
+        entry_queue_short: list[tuple[float, float, int]] = []
+
+        for _idx, t in indexed:
+            link = (t.get("order_link_id") or "") or ""
+            side = (t.get("side") or "").strip()
+            qty = float(t.get("qty") or 0)
+            price = float(t.get("price") or 0)
+            ts = ts_key(t)
+            if qty <= 0:
+                continue
+            if _is_entry_row(t):
+                if side == "Buy":
+                    entry_queue_long.append((qty, price, ts))
+                elif side == "Sell":
+                    entry_queue_short.append((qty, price, ts))
+                continue
+            if not _is_exit_row(t):
+                continue
+            exit_qty_left = qty
+            if side == "Sell":
+                while exit_qty_left > 1e-9 and entry_queue_long:
+                    entry_qty, entry_price, entry_ts = entry_queue_long[0]
+                    match_qty = min(exit_qty_left, entry_qty)
+                    exit_qty_left = round(exit_qty_left - match_qty, 8)
+                    entry_qty = round(entry_qty - match_qty, 8)
+                    if entry_qty <= 1e-9:
+                        entry_queue_long.pop(0)
+                        durations.append((ts - entry_ts) / 1000.0)
+                    else:
+                        entry_queue_long[0] = (entry_qty, entry_price, entry_ts)
+            elif side == "Buy":
+                while exit_qty_left > 1e-9 and entry_queue_short:
+                    entry_qty, entry_price, entry_ts = entry_queue_short[0]
+                    match_qty = min(exit_qty_left, entry_qty)
+                    exit_qty_left = round(exit_qty_left - match_qty, 8)
+                    entry_qty = round(entry_qty - match_qty, 8)
+                    if entry_qty <= 1e-9:
+                        entry_queue_short.pop(0)
+                        durations.append((ts - entry_ts) / 1000.0)
+                    else:
+                        entry_queue_short[0] = (entry_qty, entry_price, entry_ts)
+    return durations
+
+
 def load_evaluation_dataset(
     db_path: str = "data/bot.db",
     from_ts: Optional[int] = None,

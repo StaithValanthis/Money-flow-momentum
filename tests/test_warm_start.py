@@ -504,6 +504,11 @@ def test_parameter_aware_warm_start_evaluates_multiple_candidates(tmp_path: Path
         return {"params": params, "oos_metrics": fake_metrics, "config_id": "ws_0"}, all_results, meta
 
     monkeypatch.setattr("src.warm_start.runner.run_warm_start_candidate_search", _fake_candidate_search)
+    monkeypatch.setattr(
+        "src.warm_start.runner.passes_warm_start_seed_acceptance",
+        lambda *a, **k: (True, "", {"trade_count": 25, "closed_trade_count": 12, "median_trade_duration_sec": 200, "ultra_short_trade_fraction": 0.1, "profit_factor": 1.5, "payoff_ratio": 1.3, "max_drawdown": 0.5}),
+        raising=False,
+    )
 
     result = run_warm_start_calibration(
         demo_db_path=str(db_path),
@@ -591,6 +596,12 @@ def test_warm_start_report_includes_candidate_fields(tmp_path: Path, monkeypatch
         return None, [], {"candidates_invalid": 1, "candidates_replayed": 0, "no_trades_reason": None, "timeout_hit": False, "elapsed_seconds": 0.5, "candidate_count_requested": n_samples}
 
     monkeypatch.setattr("src.warm_start.runner.run_warm_start_candidate_search", _fake_search)
+    # Fake acceptance pass so report has seed_acceptance_passed=True and fallback_used=False (test focuses on report fields)
+    monkeypatch.setattr(
+        "src.warm_start.runner.passes_warm_start_seed_acceptance",
+        lambda *a, **k: (True, "", {"ultra_short_trade_fraction": 0.1, "median_trade_duration_sec": 200, "profit_factor": 1.2, "payoff_ratio": 1.2, "max_drawdown": 0.5}),
+        raising=False,
+    )
 
     run_warm_start_calibration(
         demo_db_path=str(db_path),
@@ -607,6 +618,8 @@ def test_warm_start_report_includes_candidate_fields(tmp_path: Path, monkeypatch
     assert "best_candidate_config_id" in report
     assert "best_candidate_metrics" in report
     assert "fallback_used" in report
+    assert "seed_acceptance_passed" in report
+    assert "seed_acceptance_checks" in report
     assert report.get("fallback_used") is False
 
 
@@ -838,6 +851,11 @@ def test_warm_start_returns_best_so_far_on_timeout(tmp_path: Path, monkeypatch) 
         return None, [], {"candidates_invalid": 0, "candidates_replayed": 0, "timeout_hit": True, "elapsed_seconds": 301.0, "candidate_count_requested": 8}
 
     monkeypatch.setattr("src.warm_start.runner.run_warm_start_candidate_search", _fake_search_best_so_far_on_timeout)
+    monkeypatch.setattr(
+        "src.warm_start.runner.passes_warm_start_seed_acceptance",
+        lambda *a, **k: (True, "", {"median_trade_duration_sec": 200, "ultra_short_trade_fraction": 0.1}),
+        raising=False,
+    )
 
     result = run_warm_start_calibration(
         demo_db_path=str(db_path),
@@ -850,4 +868,258 @@ def test_warm_start_returns_best_so_far_on_timeout(tmp_path: Path, monkeypatch) 
         assert result.get("reason") in ("warm_start_seeded", "warm_start_seeded_timeout_best_so_far")
     else:
         assert result.get("fallback_used") is True
+
+
+# --- Warm-start seed acceptance hardening tests ---
+
+
+def test_acceptance_rejects_ultra_short_duration() -> None:
+    """Replay winner with positive PnL but pathological ultra-short duration is rejected."""
+    from src.warm_start.acceptance import passes_warm_start_seed_acceptance
+
+    cfg = Config()
+    cfg.warm_start = WarmStartConfig(
+        min_replay_trade_count=10,
+        min_median_trade_duration_sec=120.0,
+        max_ultra_short_trade_fraction=0.25,
+        min_profit_factor=1.1,
+        min_payoff_ratio=1.2,
+        max_replay_drawdown=10.0,
+        min_win_rate=0.18,
+        reject_zero_fee_zero_slippage_only_edges=False,
+    )
+    metrics = {
+        "trade_count": 60,
+        "total_pnl": 100.0,
+        "win_rate": 0.5,
+        "profit_factor": 1.5,
+        "payoff_ratio": 1.3,
+        "max_drawdown": 5.0,
+        "return_pct": 1.0,
+    }
+    # All trades under 60s -> median 30s, ultra_short_fraction 1.0
+    durations_sec = [30.0] * 30
+    passed, reason, checks = passes_warm_start_seed_acceptance(metrics, cfg, durations_sec=durations_sec)
+    assert passed is False
+    assert "ultra_short" in reason or "median_trade_duration" in reason
+    assert checks.get("median_trade_duration_sec") == 30.0
+    assert checks.get("ultra_short_trade_fraction") == 1.0
+
+
+def test_acceptance_rejects_low_trade_count() -> None:
+    """Replay winner with too-low trade count is rejected."""
+    from src.warm_start.acceptance import passes_warm_start_seed_acceptance
+
+    cfg = Config()
+    cfg.warm_start = WarmStartConfig(min_replay_trade_count=30, reject_zero_fee_zero_slippage_only_edges=False)
+    metrics = {
+        "trade_count": 40,
+        "total_pnl": 50.0,
+        "win_rate": 0.4,
+        "profit_factor": 1.2,
+        "payoff_ratio": 1.2,
+        "max_drawdown": 5.0,
+        "return_pct": 0.5,
+    }
+    durations_sec = [200.0] * 10  # only 10 closed trades
+    passed, reason, checks = passes_warm_start_seed_acceptance(metrics, cfg, durations_sec=durations_sec)
+    assert passed is False
+    assert "trade_count" in reason
+    assert checks.get("closed_trade_count") == 10
+
+
+def test_acceptance_rejects_poor_profit_factor_payoff_ratio() -> None:
+    """Replay winner with poor profit factor / payoff ratio is rejected."""
+    from src.warm_start.acceptance import passes_warm_start_seed_acceptance
+
+    cfg = Config()
+    cfg.warm_start = WarmStartConfig(
+        min_replay_trade_count=10,
+        min_profit_factor=1.10,
+        min_payoff_ratio=1.20,
+        min_median_trade_duration_sec=0.0,
+        max_ultra_short_trade_fraction=1.0,
+        reject_zero_fee_zero_slippage_only_edges=False,
+    )
+    metrics = {
+        "trade_count": 60,
+        "total_pnl": 10.0,
+        "win_rate": 0.3,
+        "profit_factor": 1.05,
+        "payoff_ratio": 1.0,
+        "avg_loss": -10.0,
+        "max_drawdown": 3.0,
+        "return_pct": 0.1,
+    }
+    durations_sec = [300.0] * 30
+    passed, reason, _ = passes_warm_start_seed_acceptance(metrics, cfg, durations_sec=durations_sec)
+    assert passed is False
+    assert "profit_factor" in reason or "payoff_ratio" in reason
+
+
+def test_acceptance_passes_when_all_checks_met() -> None:
+    """Replay winner that passes all acceptance checks is accepted."""
+    from src.warm_start.acceptance import passes_warm_start_seed_acceptance
+
+    cfg = Config()
+    cfg.warm_start = WarmStartConfig(
+        min_replay_trade_count=20,
+        min_win_rate=0.18,
+        min_profit_factor=1.10,
+        min_payoff_ratio=1.20,
+        max_replay_drawdown=10.0,
+        min_median_trade_duration_sec=120.0,
+        max_ultra_short_trade_fraction=0.25,
+        reject_zero_fee_zero_slippage_only_edges=False,
+    )
+    metrics = {
+        "trade_count": 60,
+        "total_pnl": 200.0,
+        "win_rate": 0.4,
+        "profit_factor": 1.5,
+        "payoff_ratio": 1.3,
+        "max_drawdown": 5.0,
+        "return_pct": 2.0,
+    }
+    durations_sec = [180.0] * 30
+    passed, reason, checks = passes_warm_start_seed_acceptance(metrics, cfg, durations_sec=durations_sec)
+    assert passed is True
+    assert reason == ""
+    assert checks.get("closed_trade_count") == 30
+    assert checks.get("median_trade_duration_sec") == 180.0
+
+
+def test_rejected_winner_triggers_fallback_when_enabled(tmp_path: Path, monkeypatch) -> None:
+    """Rejected replay winner triggers fallback when fallback_to_safe_seed_on_failure is True."""
+    db_path = tmp_path / "demo.db"
+    Database(str(db_path)).close()
+    run_stage3_migrations(str(db_path))
+
+    cfg = Config()
+    cfg.database_path = str(db_path)
+    cfg.operating_mode = "demo_research"
+    cfg.artifacts_root = str(tmp_path / "artifacts")
+    cfg.warm_start = WarmStartConfig(
+        enabled=True,
+        candle_source="local",
+        fallback_to_safe_seed_on_failure=True,
+        min_replay_trade_count=30,
+    )
+    env = EnvSettings()
+    env.bybit_env = "demo"
+
+    def _fake_load_config(_path=None):
+        return cfg, env
+
+    candles = [{"start_ts": 1000 + i * 60000, "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5} for i in range(40)]
+    monkeypatch.setattr("src.warm_start.runner.load_config", _fake_load_config)
+    monkeypatch.setattr("src.warm_start.runner.resolve_bybit_credentials", lambda *a, **k: ("k", "s", False, "demo"), raising=False)
+    monkeypatch.setattr("src.warm_start.runner.BybitClient", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr("src.warm_start.runner.load_cached_candles", lambda a, s: {"BTCUSDT": candles})
+
+    def _fake_search_returns_winner(*args, **kwargs):
+        from src.config.candidate_factory import build_config_from_params
+        params = {"entry.long_threshold": 1.5, "entry.short_threshold": -1.5}
+        c = build_config_from_params(cfg, params)
+        if c:
+            metrics = {"trade_count": 20, "total_pnl": 80.0, "return_pct": 0.8, "max_drawdown": 0.1, "win_rate": 0.5, "profit_factor": 1.2, "payoff_ratio": 1.2}
+            meta = {"candidates_invalid": 0, "candidates_replayed": 1, "no_trades_reason": None, "timeout_hit": False, "elapsed_seconds": 1.0, "candidate_count_requested": 8}
+            return {"params": params, "oos_metrics": metrics, "config_id": "ws_0"}, [{"config_id": "ws_0", "params": params, "oos_metrics": metrics}], meta
+        return None, [], {"candidates_invalid": 0, "candidates_replayed": 0, "timeout_hit": False, "elapsed_seconds": 1.0, "candidate_count_requested": 8}
+
+    monkeypatch.setattr("src.warm_start.runner.run_warm_start_candidate_search", _fake_search_returns_winner)
+    # Force acceptance to reject so we assert fallback is used
+    monkeypatch.setattr(
+        "src.warm_start.runner.passes_warm_start_seed_acceptance",
+        lambda *a, **k: (False, "trade_count_below_min_15_<_30", {"closed_trade_count": 15}),
+        raising=False,
+    )
+    result = run_warm_start_calibration(
+        demo_db_path=str(db_path),
+        config_path=None,
+        artifact_dir=tmp_path / "artifacts",
+    )
+    assert result.get("seed_acceptance_passed") is False
+    assert result.get("seed_rejection_reason") is not None
+    assert result.get("reason") in ("seed_rejected_by_acceptance", "fallback_seed_activated")
+    assert result.get("fallback_used") is True
+    assert result.get("success") is True
+    assert result.get("seed_config_id") is not None
+
+
+def test_report_includes_acceptance_rejection_fields(tmp_path: Path, monkeypatch) -> None:
+    """Report includes seed_acceptance_passed, seed_rejection_reason, seed_acceptance_checks and related metrics."""
+    db_path = tmp_path / "demo.db"
+    Database(str(db_path)).close()
+    run_stage3_migrations(str(db_path))
+
+    cfg = Config()
+    cfg.database_path = str(db_path)
+    cfg.operating_mode = "demo_research"
+    cfg.artifacts_root = str(tmp_path / "artifacts")
+    cfg.warm_start = WarmStartConfig(
+        enabled=True,
+        candle_source="local",
+        fallback_to_safe_seed_on_failure=True,
+        min_replay_trade_count=30,
+    )
+    env = EnvSettings()
+    env.bybit_env = "demo"
+
+    def _fake_load_config(_path=None):
+        return cfg, env
+
+    candles = [{"start_ts": 1000 + i * 60000, "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5} for i in range(25)]
+    monkeypatch.setattr("src.warm_start.runner.load_config", _fake_load_config)
+    monkeypatch.setattr("src.warm_start.runner.resolve_bybit_credentials", lambda *a, **k: ("k", "s", False, "demo"), raising=False)
+    monkeypatch.setattr("src.warm_start.runner.BybitClient", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr("src.warm_start.runner.load_cached_candles", lambda a, s: {"BTCUSDT": candles})
+
+    def _fake_search_winner(*args, **kwargs):
+        from src.config.candidate_factory import build_config_from_params
+        params = {"entry.long_threshold": 1.5, "entry.short_threshold": -1.5}
+        c = build_config_from_params(cfg, params)
+        if c:
+            metrics = {"trade_count": 10, "total_pnl": 50.0, "return_pct": 0.5, "max_drawdown": 2.0}
+            meta = {"candidates_invalid": 0, "candidates_replayed": 1, "no_trades_reason": None, "timeout_hit": False, "elapsed_seconds": 0.5, "candidate_count_requested": 8}
+            return {"params": params, "oos_metrics": metrics, "config_id": "ws_0"}, [{"config_id": "ws_0", "params": params, "oos_metrics": metrics}], meta
+        return None, [], {"candidates_invalid": 0, "candidates_replayed": 0, "timeout_hit": False, "elapsed_seconds": 0.5, "candidate_count_requested": 8}
+
+    monkeypatch.setattr("src.warm_start.runner.run_warm_start_candidate_search", _fake_search_winner)
+    monkeypatch.setattr(
+        "src.warm_start.runner.passes_warm_start_seed_acceptance",
+        lambda *a, **k: (
+            False,
+            "trade_count_below_min_8_<_30",
+            {
+                "closed_trade_count": 8,
+                "ultra_short_trade_fraction": 0.2,
+                "median_trade_duration_sec": 150.0,
+                "profit_factor": 1.1,
+                "payoff_ratio": 1.2,
+                "max_drawdown": 2.0,
+            },
+        ),
+        raising=False,
+    )
+
+    run_warm_start_calibration(
+        demo_db_path=str(db_path),
+        config_path=None,
+        artifact_dir=tmp_path / "artifacts",
+    )
+    report_path = tmp_path / "artifacts" / "warm_start" / "warm_start_report.json"
+    assert report_path.exists()
+    import json
+    with open(report_path, encoding="utf-8") as f:
+        report = json.load(f)
+    assert "seed_acceptance_passed" in report
+    assert "seed_rejection_reason" in report
+    assert "seed_acceptance_checks" in report
+    assert report.get("seed_acceptance_passed") is False
+    assert report.get("seed_rejection_reason") == "trade_count_below_min_8_<_30"
+    assert "ultra_short_trade_fraction" in report or "ultra_short_trade_fraction" in str(report.get("seed_acceptance_checks") or {})
+    assert "median_trade_duration_sec" in report or "median_trade_duration_sec" in str(report.get("seed_acceptance_checks") or {})
+    assert "profit_factor" in report or "profit_factor" in str(report.get("seed_acceptance_checks") or {})
+    assert "max_drawdown" in report or "max_drawdown" in str(report.get("seed_acceptance_checks") or {})
 
