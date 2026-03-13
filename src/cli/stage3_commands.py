@@ -1028,6 +1028,13 @@ def register_stage3_cli(app: typer.Typer) -> None:
             raise typer.Exit(0)
         if result.get("error"):
             typer.echo(f"Warm-start error: {result.get('error')}")
+        run_mode = result.get("run_mode")
+        if run_mode:
+            typer.echo(f"run_mode: {run_mode}")
+        if result.get("resumed_from_checkpoint"):
+            typer.echo("resumed_from_checkpoint: True")
+        if result.get("checkpoint_cleared_reason"):
+            typer.echo(f"checkpoint_cleared_reason: {result.get('checkpoint_cleared_reason')}")
         typer.echo(f"success: {result.get('success')}  reason: {result.get('reason')}")
         typer.echo(f"seed_config_id: {result.get('seed_config_id') or 'none'}")
         typer.echo(f"fallback_used: {result.get('fallback_used', False)}")

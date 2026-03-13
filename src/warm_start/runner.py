@@ -37,6 +37,14 @@ from src.warm_start.candles import (
 from src.warm_start.strategy_replay import replay_strategy_from_candles
 from src.warm_start.candidate_search import run_warm_start_candidate_search
 from src.warm_start.acceptance import passes_warm_start_seed_acceptance
+from src.warm_start.checkpoint import (
+    load_checkpoint,
+    save_checkpoint,
+    clear_checkpoint,
+    archive_checkpoint,
+    checkpoint_matches,
+    build_checkpoint_payload,
+)
 from src.evaluation.datasets import get_trade_durations_sec
 from src.config.candidate_factory import build_config_from_params
 from src.exchange.bybit_client import BybitClient
@@ -177,6 +185,10 @@ def run_warm_start_calibration(
         "tp2_hit_rate": None,
         "exit_reason_counts": None,
         "max_consecutive_losses": None,
+        "run_mode": None,
+        "resumed_from_checkpoint": False,
+        "checkpoint_cleared_reason": None,
+        "best_candidate_params_so_far": None,
     }
     calibration_start = time.time()
 
@@ -290,7 +302,31 @@ def run_warm_start_calibration(
         total_replayed = 0
         total_invalid = 0
         best_rejection_reason_seen: Optional[str] = None
-        for batch_num in range(max_batches):
+        start_batch_index = 0
+        symbols_sorted = sorted(candles_by_symbol.keys())
+        cp = load_checkpoint(artifact_dir)
+        if cp and checkpoint_matches(config, cp, symbols_sorted, interval, lookback_days):
+            result["run_mode"] = "resumed"
+            result["resumed_from_checkpoint"] = True
+            total_requested = int(cp.get("total_candidates_requested") or 0)
+            total_replayed = int(cp.get("total_candidates_evaluated") or 0)
+            total_invalid = int(cp.get("total_candidates_invalid") or 0)
+            best_rejection_reason_seen = cp.get("best_rejection_reason_seen")
+            start_batch_index = int(cp.get("last_completed_batch_index") or -1) + 1
+            result["best_candidate_metrics"] = cp.get("best_candidate_metrics_so_far")
+            result["best_candidate_params_so_far"] = cp.get("best_candidate_params_so_far")
+            result["best_rejection_reason_seen"] = best_rejection_reason_seen
+            log.info("Warm-start resuming from checkpoint: batch %d/%d, total_candidates_evaluated=%s", start_batch_index + 1, max_batches, total_replayed)
+        elif cp:
+            result["run_mode"] = "restarted_config_changed"
+            result["resumed_from_checkpoint"] = False
+            log.info("Warm-start config or symbols changed; starting fresh search (checkpoint not resumed)")
+            clear_checkpoint(artifact_dir)
+        else:
+            result["run_mode"] = "fresh"
+            result["resumed_from_checkpoint"] = False
+
+        for batch_num in range(start_batch_index, max_batches):
             elapsed = time.time() - calibration_start
             if elapsed >= max_total_runtime_seconds:
                 log.info("Warm-start total runtime budget reached (%.0fs); stopping after %d batches", max_total_runtime_seconds, batch_num)
@@ -332,6 +368,13 @@ def run_warm_start_calibration(
             result["no_trades_reason"] = search_meta.get("no_trades_reason")
             result["timeout_hit"] = search_meta.get("timeout_hit", False)
             result["elapsed_seconds"] = round(time.time() - calibration_start, 2)
+            if best is not None:
+                result["best_candidate_params_so_far"] = best.get("params")
+                result["best_candidate_metrics"] = best.get("oos_metrics")
+
+            # Persist checkpoint after each batch so run can resume later
+            result["candidates_invalid"] = total_invalid
+            save_checkpoint(artifact_dir, build_checkpoint_payload(result, config, symbols_sorted, interval, lookback_days))
 
             if best is not None:
                 winning_config = build_config_from_params(baseline_config, best["params"])
@@ -409,6 +452,8 @@ def run_warm_start_calibration(
                             result["fallback_used"] = False
                             result["trade_count_synthetic"] = int((best.get("oos_metrics") or {}).get("trade_count") or 0)
                             log.info("Warm-start final seed activated: config_id=%s", new_id)
+                            result["checkpoint_cleared_reason"] = "viable_seed_found"
+                            archive_checkpoint(artifact_dir)
                             _write_warm_start_artifact(artifact_dir, result, config)
                             return result
                     else:
@@ -423,6 +468,8 @@ def run_warm_start_calibration(
         result["elapsed_seconds"] = round(time.time() - calibration_start, 2)
         result["reason"] = "no_viable_seed_search_exhausted"
         result["engine"] = "parameter_aware_protection_backtest"
+        result["checkpoint_cleared_reason"] = "search_exhausted"
+        archive_checkpoint(artifact_dir)
         log.info("Warm-start search exhausted after %d batches; no viable seed", result["batches_completed"])
         if allow_fallback_if_no_viable_seed:
             log.info("Warm-start fallback: search exhausted without viable seed; activating conservative seed")
@@ -807,6 +854,7 @@ def get_warm_start_status(
     config, env = load_config(config_path)
     mode = get_effective_operating_mode(config, env)
     warm = getattr(config, "warm_start", None)
+    from src.warm_start.checkpoint import checkpoint_path
     out: dict[str, Any] = {
         "operating_mode": mode,
         "warm_start_enabled": bool(warm and getattr(warm, "enabled", True)),
@@ -815,6 +863,7 @@ def get_warm_start_status(
         "reason": "",
         "active_config_id": get_active_config_id(demo_db_path),
         "last_warm_start_report": None,
+        "checkpoint_present": False,
     }
     if mode != OPERATING_MODE_DEMO_RESEARCH:
         return out
@@ -829,4 +878,6 @@ def get_warm_start_status(
                 out["last_warm_start_report"] = json.load(f)
         except Exception:
             pass
+    artifact_dir = Path(config.artifacts_root)
+    out["checkpoint_present"] = checkpoint_path(artifact_dir).exists()
     return out

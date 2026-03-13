@@ -820,6 +820,308 @@ def test_acceptance_rejects_on_low_tp1_hit_rate() -> None:
     assert "tp1_hit_rate" in reason
 
 
+# --- Warm-start checkpoint/resume tests ---
+
+
+def test_checkpoint_resume_after_partial_batch(tmp_path: Path, monkeypatch) -> None:
+    """Warm-start resumes from next batch when checkpoint exists and config matches."""
+    from src.warm_start.checkpoint import save_checkpoint, get_warm_start_fingerprint
+
+    db_path = tmp_path / "demo.db"
+    Database(str(db_path)).close()
+    run_stage3_migrations(str(db_path))
+
+    cfg = Config()
+    cfg.database_path = str(db_path)
+    cfg.operating_mode = "demo_research"
+    cfg.artifacts_root = str(tmp_path / "artifacts")
+    cfg.warm_start = WarmStartConfig(
+        enabled=True,
+        candle_source="local",
+        search_until_viable=True,
+        batch_n_samples=4,
+        max_batches=5,
+        max_total_runtime_seconds=600,
+        fallback_to_safe_seed_on_failure=True,
+    )
+    env = EnvSettings()
+    candles = [{"start_ts": 1000 + i * 60000, "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5} for i in range(30)]
+    candles_by_symbol = {"BTCUSDT": candles}
+    symbols_sorted = sorted(candles_by_symbol.keys())
+    lookback = int(getattr(cfg.warm_start, "lookback_days", 7))
+    fp = get_warm_start_fingerprint(cfg, symbols_sorted, "5", lookback)
+    env = EnvSettings()
+
+    def _fake_load_config(_path=None):
+        return cfg, env
+
+    batch_call_count = []
+
+    def _fake_search(baseline_config, candles_dict, n_samples=8, **kwargs):
+        batch_call_count.append(1)
+        from src.config.candidate_factory import build_config_from_params
+        params = {"entry.long_threshold": 1.5, "entry.short_threshold": -1.5}
+        c = build_config_from_params(baseline_config, params)
+        if not c:
+            return None, [], {"candidates_invalid": 0, "candidates_replayed": 0}
+        metrics = {"trade_count": 20, "total_pnl": 50.0, "return_pct": 0.5, "max_drawdown": 1.0}
+        meta = {"candidate_count_requested": n_samples, "candidates_replayed": n_samples, "candidates_invalid": 0, "timeout_hit": False, "elapsed_seconds": 1.0}
+        return {"params": params, "oos_metrics": metrics}, [{"params": params, "oos_metrics": metrics}], meta
+
+    monkeypatch.setattr("src.warm_start.runner.load_config", _fake_load_config)
+    monkeypatch.setattr("src.warm_start.runner.resolve_bybit_credentials", lambda *a, **k: ("k", "s", False, "demo"), raising=False)
+    monkeypatch.setattr("src.warm_start.runner.BybitClient", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr("src.warm_start.runner.load_cached_candles", lambda a, s: candles_by_symbol)
+    monkeypatch.setattr("src.warm_start.runner.run_warm_start_candidate_search", _fake_search)
+    monkeypatch.setattr("src.warm_start.runner.passes_warm_start_seed_acceptance", lambda *a, **k: (False, "rejected_for_test", {}), raising=False)
+
+    # Simulate a partial run: write checkpoint as if 1 batch completed (e.g. process was stopped)
+    artifact_dir = tmp_path / "artifacts"
+    payload = {
+        "search_until_viable": True,
+        "batches_completed": 1,
+        "max_batches": 5,
+        "max_total_runtime_seconds": 600,
+        "elapsed_seconds": 10.0,
+        "total_candidates_requested": 4,
+        "total_candidates_evaluated": 4,
+        "total_candidates_replayed": 4,
+        "total_candidates_invalid": 0,
+        "best_candidate_config_id_so_far": None,
+        "best_candidate_metrics_so_far": {"trade_count": 20},
+        "best_candidate_params_so_far": {"entry.long_threshold": 1.5},
+        "best_rejection_reason_seen": "rejected",
+        "viable_seed_found": False,
+        "last_completed_batch_index": 0,
+        "warm_start_settings_fingerprint": fp,
+        "config_fingerprint": fp,
+        "engine": "parameter_aware_protection_backtest",
+    }
+    save_checkpoint(artifact_dir, payload)
+
+    # Run: should resume from batch 2
+    result = run_warm_start_calibration(demo_db_path=str(db_path), config_path=None, artifact_dir=artifact_dir)
+    assert result.get("run_mode") == "resumed"
+    assert result.get("resumed_from_checkpoint") is True
+    assert result.get("batches_completed") >= 1
+    assert len(batch_call_count) >= 1, "Should run at least one batch after resume"
+
+
+def test_checkpoint_cumulative_counts_preserved_across_resume(tmp_path: Path, monkeypatch) -> None:
+    """Resumed run preserves and adds to total_candidates_requested/evaluated."""
+    from src.warm_start.checkpoint import save_checkpoint, get_warm_start_fingerprint
+
+    db_path = tmp_path / "demo.db"
+    Database(str(db_path)).close()
+    run_stage3_migrations(str(db_path))
+
+    cfg = Config()
+    cfg.database_path = str(db_path)
+    cfg.operating_mode = "demo_research"
+    cfg.artifacts_root = str(tmp_path / "artifacts")
+    cfg.warm_start = WarmStartConfig(
+        enabled=True,
+        candle_source="local",
+        search_until_viable=True,
+        batch_n_samples=3,
+        max_batches=4,
+        max_total_runtime_seconds=600,
+        fallback_to_safe_seed_on_failure=True,
+    )
+    candles = [{"start_ts": 1000 + i * 60000, "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5} for i in range(25)]
+    candles_by_symbol = {"BTCUSDT": candles}
+    symbols_sorted = sorted(candles_by_symbol.keys())
+    lookback = int(getattr(cfg.warm_start, "lookback_days", 7))
+    fp = get_warm_start_fingerprint(cfg, symbols_sorted, "5", lookback)
+    env = EnvSettings()
+
+    def _fake_load_config(_path=None):
+        return cfg, env
+
+    def _fake_search(baseline_config, candles_dict, n_samples=8, **kwargs):
+        from src.config.candidate_factory import build_config_from_params
+        params = {"entry.long_threshold": 1.5}
+        c = build_config_from_params(baseline_config, params)
+        meta = {"candidate_count_requested": n_samples, "candidates_replayed": n_samples, "candidates_invalid": 0, "timeout_hit": False, "elapsed_seconds": 1.0}
+        return ({"params": params, "oos_metrics": {"trade_count": 5}}, [], meta) if c else (None, [], meta)
+
+    monkeypatch.setattr("src.warm_start.runner.load_config", _fake_load_config)
+    monkeypatch.setattr("src.warm_start.runner.resolve_bybit_credentials", lambda *a, **k: ("k", "s", False, "demo"), raising=False)
+    monkeypatch.setattr("src.warm_start.runner.BybitClient", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr("src.warm_start.runner.load_cached_candles", lambda a, s: candles_by_symbol)
+    monkeypatch.setattr("src.warm_start.runner.run_warm_start_candidate_search", _fake_search)
+    monkeypatch.setattr("src.warm_start.runner.passes_warm_start_seed_acceptance", lambda *a, **k: (False, "rejected", {}), raising=False)
+
+    # Place checkpoint as if 1 batch already completed (e.g. interrupted run)
+    first_total_requested = 3
+    first_total_evaluated = 3
+    payload = {
+        "search_until_viable": True,
+        "batches_completed": 1,
+        "max_batches": 4,
+        "max_total_runtime_seconds": 600,
+        "elapsed_seconds": 5.0,
+        "total_candidates_requested": first_total_requested,
+        "total_candidates_evaluated": first_total_evaluated,
+        "total_candidates_replayed": first_total_evaluated,
+        "total_candidates_invalid": 0,
+        "best_candidate_config_id_so_far": None,
+        "best_candidate_metrics_so_far": {"trade_count": 5},
+        "best_candidate_params_so_far": {"entry.long_threshold": 1.5},
+        "best_rejection_reason_seen": "rejected",
+        "viable_seed_found": False,
+        "last_completed_batch_index": 0,
+        "warm_start_settings_fingerprint": fp,
+        "config_fingerprint": fp,
+        "engine": "parameter_aware_protection_backtest",
+    }
+    save_checkpoint(tmp_path / "artifacts", payload)
+
+    run2 = run_warm_start_calibration(demo_db_path=str(db_path), config_path=None, artifact_dir=tmp_path / "artifacts")
+    assert run2.get("resumed_from_checkpoint") is True
+    assert run2.get("total_candidates_requested") >= first_total_requested
+    assert run2.get("total_candidates_evaluated") >= first_total_evaluated
+
+
+def test_checkpoint_resume_blocked_when_config_changed(tmp_path: Path, monkeypatch) -> None:
+    """When warm_start settings change, checkpoint is not resumed; run starts fresh."""
+    from src.warm_start.checkpoint import save_checkpoint, get_warm_start_fingerprint
+
+    db_path = tmp_path / "demo.db"
+    Database(str(db_path)).close()
+    run_stage3_migrations(str(db_path))
+
+    cfg = Config()
+    cfg.database_path = str(db_path)
+    cfg.operating_mode = "demo_research"
+    cfg.artifacts_root = str(tmp_path / "artifacts")
+    cfg.warm_start = WarmStartConfig(
+        enabled=True,
+        candle_source="local",
+        search_until_viable=True,
+        batch_n_samples=4,
+        max_batches=5,
+        max_total_runtime_seconds=600,
+        fallback_to_safe_seed_on_failure=True,
+    )
+    env = EnvSettings()
+    candles = [{"start_ts": 1000 + i * 60000, "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5} for i in range(20)]
+    candles_by_symbol = {"BTCUSDT": candles}
+    symbols_sorted = sorted(candles_by_symbol.keys())
+    lookback = int(getattr(cfg.warm_start, "lookback_days", 7))
+    fp_old = get_warm_start_fingerprint(cfg, symbols_sorted, "5", lookback)
+
+    def _fake_load_config(_path=None):
+        return cfg, env
+
+    def _fake_search(*args, **kwargs):
+        from src.config.candidate_factory import build_config_from_params
+        params = {}
+        c = build_config_from_params(cfg, params)
+        meta = {"candidate_count_requested": 4, "candidates_replayed": 4, "candidates_invalid": 0, "timeout_hit": False, "elapsed_seconds": 1.0}
+        return ({"params": params, "oos_metrics": {}}, [], meta) if c else (None, [], meta)
+
+    monkeypatch.setattr("src.warm_start.runner.load_config", _fake_load_config)
+    monkeypatch.setattr("src.warm_start.runner.resolve_bybit_credentials", lambda *a, **k: ("k", "s", False, "demo"), raising=False)
+    monkeypatch.setattr("src.warm_start.runner.BybitClient", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr("src.warm_start.runner.load_cached_candles", lambda a, s: candles_by_symbol)
+    monkeypatch.setattr("src.warm_start.runner.run_warm_start_candidate_search", _fake_search)
+    monkeypatch.setattr("src.warm_start.runner.passes_warm_start_seed_acceptance", lambda *a, **k: (False, "rejected", {}), raising=False)
+
+    # Write checkpoint with OLD fingerprint (batch_n_samples=4)
+    payload = {
+        "search_until_viable": True,
+        "batches_completed": 1,
+        "max_batches": 5,
+        "max_total_runtime_seconds": 600,
+        "elapsed_seconds": 5.0,
+        "total_candidates_requested": 4,
+        "total_candidates_evaluated": 4,
+        "total_candidates_replayed": 4,
+        "total_candidates_invalid": 0,
+        "best_rejection_reason_seen": "rejected",
+        "viable_seed_found": False,
+        "last_completed_batch_index": 0,
+        "warm_start_settings_fingerprint": fp_old,
+        "config_fingerprint": fp_old,
+        "engine": "parameter_aware_protection_backtest",
+    }
+    save_checkpoint(tmp_path / "artifacts", payload)
+    assert (tmp_path / "artifacts" / "warm_start" / "warm_start_checkpoint.json").exists()
+
+    # Change config so fingerprint differs (batch_n_samples=6)
+    cfg.warm_start = WarmStartConfig(
+        enabled=True,
+        candle_source="local",
+        search_until_viable=True,
+        batch_n_samples=6,
+        max_batches=5,
+        max_total_runtime_seconds=600,
+        fallback_to_safe_seed_on_failure=True,
+    )
+
+    result2 = run_warm_start_calibration(demo_db_path=str(db_path), config_path=None, artifact_dir=tmp_path / "artifacts")
+    assert result2.get("run_mode") == "restarted_config_changed"
+    assert result2.get("resumed_from_checkpoint") is False
+
+
+def test_checkpoint_cleared_on_success_or_exhaustion(tmp_path: Path, monkeypatch) -> None:
+    """Checkpoint is archived when viable seed found or search exhausted."""
+    from pathlib import Path as P
+    db_path = tmp_path / "demo.db"
+    Database(str(db_path)).close()
+    run_stage3_migrations(str(db_path))
+
+    cfg = Config()
+    cfg.database_path = str(db_path)
+    cfg.operating_mode = "demo_research"
+    cfg.artifacts_root = str(tmp_path / "artifacts")
+    cfg.warm_start = WarmStartConfig(
+        enabled=True,
+        candle_source="local",
+        search_until_viable=True,
+        batch_n_samples=2,
+        max_batches=2,
+        max_total_runtime_seconds=600,
+        fallback_to_safe_seed_on_failure=True,
+    )
+    env = EnvSettings()
+    candles = [{"start_ts": 1000 + i * 60000, "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5} for i in range(20)]
+    candles_by_symbol = {"BTCUSDT": candles}
+
+    def _fake_load_config(_path=None):
+        return cfg, env
+
+    def _fake_search_accept_second_batch(baseline_config, candles_dict, n_samples=8, **kwargs):
+        from src.config.candidate_factory import build_config_from_params
+        params = {"entry.long_threshold": 1.5}
+        c = build_config_from_params(baseline_config, params)
+        metrics = {"trade_count": 30, "total_pnl": 100.0}
+        meta = {"candidate_count_requested": n_samples, "candidates_replayed": n_samples, "candidates_invalid": 0, "timeout_hit": False, "elapsed_seconds": 1.0}
+        return ({"params": params, "oos_metrics": metrics}, [], meta) if c else (None, [], meta)
+
+    monkeypatch.setattr("src.warm_start.runner.load_config", _fake_load_config)
+    monkeypatch.setattr("src.warm_start.runner.resolve_bybit_credentials", lambda *a, **k: ("k", "s", False, "demo"), raising=False)
+    monkeypatch.setattr("src.warm_start.runner.BybitClient", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr("src.warm_start.runner.load_cached_candles", lambda a, s: candles_by_symbol)
+    monkeypatch.setattr("src.warm_start.runner.run_warm_start_candidate_search", _fake_search_accept_second_batch)
+    monkeypatch.setattr("src.warm_start.runner.passes_warm_start_seed_acceptance", lambda *a, **k: (True, "", {"median_trade_duration_sec": 200, "ultra_short_trade_fraction": 0.1}), raising=False)
+
+    result = run_warm_start_calibration(demo_db_path=str(db_path), config_path=None, artifact_dir=tmp_path / "artifacts")
+    warm_start_dir = tmp_path / "artifacts" / "warm_start"
+    checkpoint_file = warm_start_dir / "warm_start_checkpoint.json"
+    if result.get("viable_seed_found"):
+        assert result.get("checkpoint_cleared_reason") == "viable_seed_found"
+        assert not checkpoint_file.exists(), "Checkpoint should be archived after viable seed"
+        archives = list(warm_start_dir.glob("warm_start_checkpoint_archive_*.json"))
+        assert len(archives) >= 1, "Should have at least one archive"
+    else:
+        assert result.get("checkpoint_cleared_reason") == "search_exhausted"
+        assert not checkpoint_file.exists()
+        archives = list(warm_start_dir.glob("warm_start_checkpoint_archive_*.json"))
+        assert len(archives) >= 1
+
+
 def test_warm_start_fallback_when_no_viable_candidate(tmp_path: Path, monkeypatch) -> None:
     """Fallback seed is used when parameter-aware search returns no viable candidate."""
     db_path = tmp_path / "demo.db"
