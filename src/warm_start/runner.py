@@ -450,16 +450,52 @@ def run_warm_start_calibration(
         best_id = opt_out.get("best_candidate_config_id")
         result["optimizer_run_id"] = opt_out.get("run_id")
 
+        legacy_data = None
         if best_id and require_profitable:
-            data = load_evaluation_dataset(temp_db, from_ts=from_ts_ms, to_ts=to_ts_ms, config_id=best_id)
-            trades = compute_realized_pnl_by_pairing(data["trades"])
+            legacy_data = load_evaluation_dataset(temp_db, from_ts=from_ts_ms, to_ts=to_ts_ms, config_id=best_id)
+            trades = compute_realized_pnl_by_pairing(legacy_data["trades"])
             metrics = compute_core_metrics(trades)
             if float(metrics.get("total_pnl") or 0) <= 0:
                 best_id = None
                 result["reason"] = "no_profitable_seed"
+                legacy_data = None
 
         if best_id:
-            # Copy best config from temp DB to Demo DB and activate
+            # Run seed acceptance on optimizer winner (same as primary path) and populate report fields
+            data = legacy_data or load_evaluation_dataset(temp_db, from_ts=from_ts_ms, to_ts=to_ts_ms, config_id=best_id)
+            trades_raw = data["trades"]
+            paired = compute_realized_pnl_by_pairing(trades_raw)
+            metrics = compute_core_metrics(paired)
+            durations_sec = get_trade_durations_sec(trades_raw)
+            accepted, rejection_reason, acceptance_checks = passes_warm_start_seed_acceptance(
+                metrics,
+                config,
+                durations_sec=durations_sec,
+                fees_summary=float(metrics.get("fees_summary") or 0),
+                slippage_summary=float(metrics.get("slippage_summary") or 0),
+            )
+            result["seed_acceptance_checks"] = acceptance_checks
+            result["ultra_short_trade_fraction"] = acceptance_checks.get("ultra_short_trade_fraction")
+            result["median_trade_duration_sec"] = acceptance_checks.get("median_trade_duration_sec")
+            result["profit_factor"] = acceptance_checks.get("profit_factor")
+            result["payoff_ratio"] = acceptance_checks.get("payoff_ratio")
+            result["max_drawdown"] = acceptance_checks.get("max_drawdown")
+            result["seed_acceptance_passed"] = accepted
+            result["seed_rejection_reason"] = rejection_reason if not accepted else None
+
+            if not accepted:
+                result["reason"] = "seed_rejected_by_acceptance"
+                result["best_candidate_metrics"] = metrics
+                result["elapsed_seconds"] = round(time.time() - calibration_start, 2)
+                log.info("Warm-start legacy path: optimizer winner rejected by seed acceptance: %s", rejection_reason)
+                if fallback:
+                    log.info("Warm-start fallback: legacy winner rejected; activating conservative seed")
+                    _apply_fallback_seed(demo_db_path, config, artifact_dir, result)
+                else:
+                    _write_warm_start_artifact(artifact_dir, result, config)
+                return result
+
+            # Accepted: copy best config from temp DB to Demo DB and activate
             rec = get_config_version(best_id, temp_db)
             if not rec or not rec.get("artifact_path"):
                 result["reason"] = "best_config_artifact_missing"
@@ -496,11 +532,20 @@ def run_warm_start_calibration(
                 result["warm_start_used"] = True
                 result["reason"] = "warm_start_seeded"
                 result["best_candidate_config_id"] = new_id
+                result["best_candidate_metrics"] = metrics
                 _write_warm_start_artifact(artifact_dir, result, config)
                 return result
             result["reason"] = "activation_failed"
         else:
             result["reason"] = result.get("reason") or "no_acceptable_candidate"
+            result["seed_acceptance_passed"] = False
+            result["seed_rejection_reason"] = result["reason"]
+            result["seed_acceptance_checks"] = {}
+            result["ultra_short_trade_fraction"] = None
+            result["median_trade_duration_sec"] = None
+            result["profit_factor"] = None
+            result["payoff_ratio"] = None
+            result["max_drawdown"] = None
 
     result["elapsed_seconds"] = round(time.time() - calibration_start, 2)
     if fallback:

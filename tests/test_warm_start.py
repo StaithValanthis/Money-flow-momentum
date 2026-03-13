@@ -521,6 +521,25 @@ def test_parameter_aware_warm_start_evaluates_multiple_candidates(tmp_path: Path
     assert result.get("best_candidate_config_id") is not None
     assert result.get("best_candidate_metrics") is not None
     assert result.get("fallback_used") is False
+    # Acceptance fields must be populated on successful seed path
+    assert result.get("seed_acceptance_passed") is True
+    assert result.get("seed_rejection_reason") is None
+    assert result.get("seed_acceptance_checks") is not None
+    assert result.get("median_trade_duration_sec") is not None
+    assert result.get("ultra_short_trade_fraction") is not None
+    assert result.get("profit_factor") is not None
+    assert result.get("payoff_ratio") is not None
+    assert result.get("max_drawdown") is not None
+
+    report_path = tmp_path / "artifacts" / "warm_start" / "warm_start_report.json"
+    assert report_path.exists()
+    import json
+    with open(report_path, encoding="utf-8") as f:
+        report = json.load(f)
+    assert report.get("seed_acceptance_passed") is True
+    assert report.get("seed_acceptance_checks") is not None
+    assert "median_trade_duration_sec" in report and report.get("median_trade_duration_sec") is not None
+    assert "profit_factor" in report and report.get("profit_factor") is not None
 
 
 def test_different_params_produce_different_replay_results() -> None:
@@ -1045,6 +1064,15 @@ def test_rejected_winner_triggers_fallback_when_enabled(tmp_path: Path, monkeypa
     assert result.get("fallback_used") is True
     assert result.get("success") is True
     assert result.get("seed_config_id") is not None
+    # Rejected path: report must contain rejection fields
+    report_path = tmp_path / "artifacts" / "warm_start" / "warm_start_report.json"
+    assert report_path.exists()
+    import json
+    with open(report_path, encoding="utf-8") as f:
+        report = json.load(f)
+    assert report.get("seed_acceptance_passed") is False
+    assert report.get("seed_rejection_reason") is not None
+    assert report.get("seed_acceptance_checks") is not None
 
 
 def test_report_includes_acceptance_rejection_fields(tmp_path: Path, monkeypatch) -> None:
