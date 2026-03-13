@@ -111,7 +111,7 @@ def test_warm_start_uses_strategy_replay_engine_primary(tmp_path: Path, monkeypa
         config_path=None,
         artifact_dir=tmp_path / "artifacts",
     )
-    assert result.get("engine") in ("parameter_aware_backtest", "strategy_replay")
+    assert result.get("engine") in ("parameter_aware_protection_backtest", "parameter_aware_backtest", "strategy_replay")
     # Either warm-start path uses strategy replay/backtest (parameter-aware per candidate; fallback replays once).
     assert "synthetic_momentum_proxy" not in str(result.get("engine_meta", {}))
 
@@ -515,7 +515,7 @@ def test_parameter_aware_warm_start_evaluates_multiple_candidates(tmp_path: Path
         artifact_dir=tmp_path / "artifacts",
     )
     assert call_count == [1]
-    assert result.get("engine") == "parameter_aware_backtest"
+    assert result.get("engine") == "parameter_aware_protection_backtest"
     assert result.get("candidate_count_evaluated") == 5
     assert result.get("best_candidate_config_id") is not None
     assert result.get("best_candidate_metrics") is not None
@@ -631,7 +631,7 @@ def test_warm_start_report_includes_candidate_fields(tmp_path: Path, monkeypatch
     import json
     with open(report_path, encoding="utf-8") as f:
         report = json.load(f)
-    assert report.get("engine") == "parameter_aware_backtest"
+    assert report.get("engine") == "parameter_aware_protection_backtest"
     assert "candidate_count_evaluated" in report
     assert "best_candidate_config_id" in report
     assert "best_candidate_metrics" in report
@@ -717,6 +717,107 @@ def test_backtest_engine_applies_fees_and_slippage() -> None:
     assert metrics_cost["total_pnl"] <= metrics_zero["total_pnl"]
     assert metrics_cost["fees_summary"] >= 0
     assert metrics_cost["slippage_summary"] >= 0
+
+
+def test_protection_aware_backtest_emits_exit_reasons_and_metrics() -> None:
+    """Protection-aware backtest returns trades with exit_reason and metrics (stop_out_rate, tp1_hit_rate, exit_reason_counts)."""
+    from src.warm_start.backtest_engine import run_backtest_on_candles, EXIT_STOP_LOSS, EXIT_TP1, EXIT_TP2, EXIT_TIME_STOP, EXIT_MAX_HOLD, EXIT_OPPOSITE_SIGNAL
+
+    cfg = Config()
+    cfg.operating_mode = "demo_research"
+    candles = {
+        "BTCUSDT": [
+            {"start_ts": 1000 + i * 60000, "open": 100.0 + i, "high": 101.0 + i, "low": 99.0 + i, "close": 100.5 + i}
+            for i in range(50)
+        ]
+    }
+    trades, metrics, meta = run_backtest_on_candles(cfg, candles, fee_bps=0.0, slippage_bps=0.0)
+    assert meta.get("engine") == "parameter_aware_protection_backtest"
+    assert "stop_out_rate" in metrics
+    assert "tp1_hit_rate" in metrics
+    assert "tp2_hit_rate" in metrics
+    assert "exit_reason_counts" in metrics
+    assert "max_consecutive_losses" in metrics
+    exit_rows = [t for t in trades if t.get("exit_reason")]
+    if exit_rows:
+        assert all("exit_reason" in t for t in exit_rows)
+        reasons = set(t["exit_reason"] for t in exit_rows)
+        assert reasons.issubset({EXIT_STOP_LOSS, EXIT_TP1, EXIT_TP2, EXIT_TIME_STOP, EXIT_MAX_HOLD, EXIT_OPPOSITE_SIGNAL})
+
+
+def test_acceptance_rejects_on_stop_out_rate() -> None:
+    """Seed acceptance rejects when stop_out_rate exceeds max_stop_out_rate."""
+    from src.warm_start.acceptance import passes_warm_start_seed_acceptance
+
+    cfg = Config()
+    cfg.warm_start = WarmStartConfig(max_stop_out_rate=0.40, min_replay_trade_count=5)
+    metrics = {
+        "trade_count": 20,
+        "total_pnl": 100.0,
+        "win_rate": 0.5,
+        "profit_factor": 1.5,
+        "payoff_ratio": 1.5,
+        "max_drawdown": 2.0,
+        "return_pct": 1.0,
+        "stop_out_rate": 0.55,
+        "tp1_hit_rate": 0.20,
+        "max_consecutive_losses": 2,
+    }
+    passed, reason, checks = passes_warm_start_seed_acceptance(
+        metrics, cfg, durations_sec=[300.0] * 20, fees_summary=10.0, slippage_summary=5.0
+    )
+    assert passed is False
+    assert "stop_out_rate" in reason
+
+
+def test_acceptance_rejects_on_max_consecutive_losses() -> None:
+    """Seed acceptance rejects when max_consecutive_losses exceeds threshold."""
+    from src.warm_start.acceptance import passes_warm_start_seed_acceptance
+
+    cfg = Config()
+    cfg.warm_start = WarmStartConfig(max_consecutive_losses=5, min_replay_trade_count=5)
+    metrics = {
+        "trade_count": 20,
+        "total_pnl": 50.0,
+        "win_rate": 0.45,
+        "profit_factor": 1.2,
+        "payoff_ratio": 1.3,
+        "max_drawdown": 3.0,
+        "return_pct": 0.5,
+        "stop_out_rate": 0.30,
+        "tp1_hit_rate": 0.15,
+        "max_consecutive_losses": 8,
+    }
+    passed, reason, checks = passes_warm_start_seed_acceptance(
+        metrics, cfg, durations_sec=[200.0] * 20, fees_summary=5.0, slippage_summary=2.0
+    )
+    assert passed is False
+    assert "max_consecutive_losses" in reason
+
+
+def test_acceptance_rejects_on_low_tp1_hit_rate() -> None:
+    """Seed acceptance rejects when tp1_hit_rate is below min_tp1_hit_rate."""
+    from src.warm_start.acceptance import passes_warm_start_seed_acceptance
+
+    cfg = Config()
+    cfg.warm_start = WarmStartConfig(min_tp1_hit_rate=0.10, min_replay_trade_count=5)
+    metrics = {
+        "trade_count": 20,
+        "total_pnl": 80.0,
+        "win_rate": 0.5,
+        "profit_factor": 1.4,
+        "payoff_ratio": 1.4,
+        "max_drawdown": 2.0,
+        "return_pct": 0.8,
+        "stop_out_rate": 0.40,
+        "tp1_hit_rate": 0.02,
+        "max_consecutive_losses": 3,
+    }
+    passed, reason, checks = passes_warm_start_seed_acceptance(
+        metrics, cfg, durations_sec=[250.0] * 20, fees_summary=8.0, slippage_summary=3.0
+    )
+    assert passed is False
+    assert "tp1_hit_rate" in reason
 
 
 def test_warm_start_fallback_when_no_viable_candidate(tmp_path: Path, monkeypatch) -> None:

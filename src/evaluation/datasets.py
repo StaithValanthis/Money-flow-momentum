@@ -12,8 +12,9 @@ def _is_entry_row(t: dict) -> bool:
 
 
 def _is_exit_row(t: dict) -> bool:
+    """Entry = order_link_id startswith 'entry'. Exit = tp1_*, tp2_*, or exit_* (protection-aware)."""
     link = (t.get("order_link_id") or "") or ""
-    return link.startswith("tp1_") or link.startswith("tp2_")
+    return link.startswith("tp1_") or link.startswith("tp2_") or link.startswith("exit_")
 
 
 def compute_realized_pnl_by_pairing(trades: list[dict]) -> list[dict]:

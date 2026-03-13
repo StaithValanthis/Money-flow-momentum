@@ -418,6 +418,20 @@ class WarmStartConfig(BaseModel):
         description="When reject_zero_fee_zero_slippage_only_edges: min return_pct required when fees/slippage are zero",
     )
 
+    # Protection-aware acceptance (Demo-only): reject seeds with poor exit behavior
+    max_stop_out_rate: float = Field(
+        default=0.55, ge=0.0, le=1.0,
+        description="Max fraction of exits that may be stop-loss before seed is rejected",
+    )
+    max_consecutive_losses: int = Field(
+        default=6, ge=1, le=50,
+        description="Max allowed consecutive losing trades before seed is rejected",
+    )
+    min_tp1_hit_rate: float = Field(
+        default=0.05, ge=0.0, le=1.0,
+        description="Min fraction of exits that must be TP1 (or better) before seed is accepted",
+    )
+
 
 class LoggingConfig(BaseModel):
     """Logging settings."""

@@ -107,4 +107,26 @@ def passes_warm_start_seed_acceptance(
             if profit_factor < 1.05:
                 return False, f"zero_fee_razor_thin_profit_factor_{profit_factor:.3f}_<_1.05", checks
 
+    # Protection-aware thresholds (when metrics from protection-aware backtest are present)
+    stop_out_rate = metrics.get("stop_out_rate")
+    if stop_out_rate is not None:
+        checks["stop_out_rate"] = stop_out_rate
+        max_sor = float(getattr(warm, "max_stop_out_rate", 0.55))
+        if stop_out_rate > max_sor:
+            return False, f"stop_out_rate_above_max_{stop_out_rate:.2f}_>_{max_sor}", checks
+
+    max_consec_losses = metrics.get("max_consecutive_losses")
+    if max_consec_losses is not None:
+        checks["max_consecutive_losses"] = max_consec_losses
+        max_allowed = int(getattr(warm, "max_consecutive_losses", 6))
+        if max_consec_losses > max_allowed:
+            return False, f"max_consecutive_losses_above_max_{max_consec_losses}_>_{max_allowed}", checks
+
+    tp1_hit_rate = metrics.get("tp1_hit_rate")
+    if tp1_hit_rate is not None:
+        checks["tp1_hit_rate"] = tp1_hit_rate
+        min_tp1 = float(getattr(warm, "min_tp1_hit_rate", 0.05))
+        if tp1_hit_rate < min_tp1:
+            return False, f"tp1_hit_rate_below_min_{tp1_hit_rate:.2f}_<_{min_tp1}", checks
+
     return True, "", checks

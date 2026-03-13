@@ -172,6 +172,11 @@ def run_warm_start_calibration(
         "best_rejection_reason_seen": None,
         "search_exhausted": False,
         "require_viable_seed_before_trading": False,
+        "stop_out_rate": None,
+        "tp1_hit_rate": None,
+        "tp2_hit_rate": None,
+        "exit_reason_counts": None,
+        "max_consecutive_losses": None,
     }
     calibration_start = time.time()
 
@@ -332,10 +337,14 @@ def run_warm_start_calibration(
                 winning_config = build_config_from_params(baseline_config, best["params"])
                 if winning_config:
                     try:
-                        winner_trades, _ = replay_strategy_from_candles(winning_config, candles_by_symbol)
+                        from src.warm_start.backtest_engine import run_backtest_on_candles
+                        warm_cfg = getattr(baseline_config, "warm_start", None)
+                        fee_bps = float(getattr(warm_cfg, "backtest_fee_bps", 6.0)) if warm_cfg else 6.0
+                        slip_bps = float(getattr(warm_cfg, "backtest_slippage_bps", 2.0)) if warm_cfg else 2.0
+                        winner_trades, _, _ = run_backtest_on_candles(winning_config, candles_by_symbol, fee_bps, slip_bps)
                         durations_sec = get_trade_durations_sec(winner_trades)
                     except Exception as e:
-                        log.warning("Warm-start re-replay for acceptance failed: %s", e)
+                        log.warning("Warm-start re-backtest for acceptance failed: %s", e)
                         durations_sec = []
                     metrics = best.get("oos_metrics") or {}
                     accepted, rejection_reason, acceptance_checks = passes_warm_start_seed_acceptance(
@@ -357,10 +366,15 @@ def run_warm_start_calibration(
                     result["seed_rejection_reason"] = rejection_reason if not accepted else None
                     result["best_rejection_reason_seen"] = best_rejection_reason_seen
                     result["best_candidate_metrics"] = metrics
+                    result["stop_out_rate"] = metrics.get("stop_out_rate")
+                    result["tp1_hit_rate"] = metrics.get("tp1_hit_rate")
+                    result["tp2_hit_rate"] = metrics.get("tp2_hit_rate")
+                    result["exit_reason_counts"] = metrics.get("exit_reason_counts")
+                    result["max_consecutive_losses"] = metrics.get("max_consecutive_losses")
 
                     if accepted:
                         result["viable_seed_found"] = True
-                        result["engine"] = "parameter_aware_backtest"
+                        result["engine"] = "parameter_aware_protection_backtest"
                         log.info("Warm-start viable seed found in batch %d; activating", batch_num + 1)
                         run_stage3_migrations(demo_db_path)
                         demo_artifact_dir = Path(artifact_dir) / "configs"
@@ -408,7 +422,7 @@ def run_warm_start_calibration(
         result["best_rejection_reason_seen"] = best_rejection_reason_seen
         result["elapsed_seconds"] = round(time.time() - calibration_start, 2)
         result["reason"] = "no_viable_seed_search_exhausted"
-        result["engine"] = "parameter_aware_backtest"
+        result["engine"] = "parameter_aware_protection_backtest"
         log.info("Warm-start search exhausted after %d batches; no viable seed", result["batches_completed"])
         if allow_fallback_if_no_viable_seed:
             log.info("Warm-start fallback: search exhausted without viable seed; activating conservative seed")
@@ -443,12 +457,16 @@ def run_warm_start_calibration(
         if best is not None:
             winning_config = build_config_from_params(baseline_config, best["params"])
             if winning_config:
-                # Strict seed acceptance: replay winner must pass quality/realism checks before Demo activation
+                # Strict seed acceptance: use backtest trades (with exit_reason) for durations
                 try:
-                    winner_trades, _ = replay_strategy_from_candles(winning_config, candles_by_symbol)
+                    from src.warm_start.backtest_engine import run_backtest_on_candles
+                    warm_cfg = getattr(baseline_config, "warm_start", None)
+                    fee_bps = float(getattr(warm_cfg, "backtest_fee_bps", 6.0)) if warm_cfg else 6.0
+                    slip_bps = float(getattr(warm_cfg, "backtest_slippage_bps", 2.0)) if warm_cfg else 2.0
+                    winner_trades, _, _ = run_backtest_on_candles(winning_config, candles_by_symbol, fee_bps, slip_bps)
                     durations_sec = get_trade_durations_sec(winner_trades)
                 except Exception as e:
-                    log.warning("Warm-start re-replay for acceptance failed: %s", e)
+                    log.warning("Warm-start re-backtest for acceptance failed: %s", e)
                     durations_sec = []
                 metrics = best.get("oos_metrics") or {}
                 accepted, rejection_reason, acceptance_checks = passes_warm_start_seed_acceptance(
@@ -471,8 +489,13 @@ def run_warm_start_calibration(
                     result["reason"] = "seed_rejected_by_acceptance"
                     result["best_candidate_config_id"] = None
                     result["best_candidate_metrics"] = metrics
+                    result["stop_out_rate"] = metrics.get("stop_out_rate")
+                    result["tp1_hit_rate"] = metrics.get("tp1_hit_rate")
+                    result["tp2_hit_rate"] = metrics.get("tp2_hit_rate")
+                    result["exit_reason_counts"] = metrics.get("exit_reason_counts")
+                    result["max_consecutive_losses"] = metrics.get("max_consecutive_losses")
                     result["candidate_count_evaluated"] = len(all_results)
-                    result["engine"] = "parameter_aware_backtest"
+                    result["engine"] = "parameter_aware_protection_backtest"
                     result["elapsed_seconds"] = round(time.time() - calibration_start, 2)
                     result["viable_seed_found"] = False
                     log.info("Warm-start replay winner rejected by seed acceptance: %s", rejection_reason)
@@ -504,7 +527,7 @@ def run_warm_start_calibration(
                     result["seed_config_id"] = new_id
                     result["warm_start_used"] = True
                     result["reason"] = "warm_start_seeded"
-                    result["engine"] = "parameter_aware_backtest"
+                    result["engine"] = "parameter_aware_protection_backtest"
                     result["engine_meta"] = {
                         "candidate_count_evaluated": len(all_results),
                         "best_candidate_config_id": new_id,
@@ -522,6 +545,11 @@ def run_warm_start_calibration(
                     result["best_candidate_metrics"] = best.get("oos_metrics")
                     result["fallback_used"] = False
                     result["trade_count_synthetic"] = int((best.get("oos_metrics") or {}).get("trade_count") or 0)
+                    result["stop_out_rate"] = (best.get("oos_metrics") or {}).get("stop_out_rate")
+                    result["tp1_hit_rate"] = (best.get("oos_metrics") or {}).get("tp1_hit_rate")
+                    result["tp2_hit_rate"] = (best.get("oos_metrics") or {}).get("tp2_hit_rate")
+                    result["exit_reason_counts"] = (best.get("oos_metrics") or {}).get("exit_reason_counts")
+                    result["max_consecutive_losses"] = (best.get("oos_metrics") or {}).get("max_consecutive_losses")
                     if result.get("timeout_hit"):
                         result["reason"] = "warm_start_seeded_timeout_best_so_far"
                     result["viable_seed_found"] = True
