@@ -8,6 +8,7 @@ from typing import Optional, Any, Dict
 import typer
 
 from src.automation.orchestrator import get_automation_status, run_demo_automation_cycle
+from src.research.verdict import evaluate_research_verdict
 from src.config.config import load_config
 from src.config.versioning import (
     list_config_versions,
@@ -1091,6 +1092,27 @@ def register_stage3_cli(app: typer.Typer) -> None:
             typer.echo("latest_artifact: none")
 
     app.add_typer(automation_app, name="automation")
+
+    # --- Research verdict / strategy viability (Demo-only advisory layer) ---
+    research_app = typer.Typer(help="Demo research verdict: classify strategy viability from cumulative evidence")
+
+    @research_app.command("verdict")
+    def research_verdict_cmd(
+        config_path: Optional[Path] = typer.Option(None, "--config", "-c"),
+    ) -> None:
+        """Compute research verdict and write research_verdict.json (Demo-only; non-destructive)."""
+        config, _ = load_config(config_path)
+        result = evaluate_research_verdict(config)
+        typer.echo(f"verdict: {result.get('verdict')}")
+        reasons = result.get("reasons") or []
+        typer.echo(f"reasons: {', '.join(reasons) if reasons else 'none'}")
+        summary = result.get("summary") or {}
+        typer.echo(f"total_warm_start_candidates: {summary.get('total_warm_start_candidates')}")
+        typer.echo(f"total_demo_closed_trades: {summary.get('total_demo_closed_trades')}")
+        typer.echo(f"completed_eval_cycles: {summary.get('completed_eval_cycles')}")
+        raise typer.Exit(0)
+
+    app.add_typer(research_app, name="research")
 
     @app.command("post-burnin")
     def post_burnin(

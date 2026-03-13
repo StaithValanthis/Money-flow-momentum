@@ -43,6 +43,7 @@ from src.shadow.shadow_runner import ShadowRunner
 from src.storage.artifacts import automation_dir, pipeline_dir
 from src.storage.db import Database
 from src.utils.logging import get_logger
+from src.research.verdict import evaluate_research_verdict
 from src.validation.readiness import READINESS_NOT_READY, compute_readiness
 
 log = get_logger(__name__)
@@ -85,6 +86,17 @@ def _write_recommendation_artifacts(config: Config, snap: AutomationSnapshot, de
         "snapshot": asdict(snap),
     }
     payload.update(details)
+
+    # Optional research verdict (Demo-only; advisory)
+    policy = getattr(config, "research_policy", None)
+    if policy and getattr(policy, "enabled", True) and getattr(policy, "emit_verdict_in_status", True):
+        try:
+            verdict_result = evaluate_research_verdict(config)
+            payload["research_verdict"] = verdict_result.get("verdict")
+            payload["research_verdict_reasons"] = verdict_result.get("reasons")
+        except Exception as e:
+            log.debug(f"automation: research_verdict computation failed: {e}")
+
     json_path = base / f"automation_status_{ts}.json"
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, default=str)

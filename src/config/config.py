@@ -330,6 +330,29 @@ class DemoResearchConfig(BaseModel):
     demo_research_burnin_permissive: bool = True
 
 
+class ResearchPolicyConfig(BaseModel):
+    """Demo-only research verdict thresholds and reporting policy."""
+
+    enabled: bool = True
+
+    # When to stop calling it "too early"
+    min_total_warm_start_candidates_before_strategy_judgment: int = Field(default=500, ge=0, le=1_000_000)
+    min_real_demo_closed_trades_before_strategy_judgment: int = Field(default=200, ge=0, le=1_000_000)
+    min_completed_eval_cycles_before_strategy_judgment: int = Field(default=3, ge=0, le=10_000)
+
+    # What counts as a surviving / reviewable Demo candidate
+    min_demo_profit_factor_for_candidate_review: float = Field(default=1.10, ge=0.0, le=10.0)
+    min_demo_expectancy_for_candidate_review: float = Field(default=0.0)
+    max_demo_ultra_short_trade_fraction_for_candidate_review: float = Field(default=0.25, ge=0.0, le=1.0)
+
+    # Optional strategy-doubt threshold behavior
+    require_no_surviving_candidate_after_thresholds: bool = True
+
+    # Optional behavior hooks
+    emit_verdict_in_status: bool = True
+    emit_verdict_artifact: bool = True
+
+
 class WarmStartConfig(BaseModel):
     """
     Demo-only warm-start: seed Demo from historical candle calibration before first trading.
@@ -419,6 +442,7 @@ class Config(BaseModel):
     burn_in: BurnInConfig = Field(default_factory=BurnInConfig)
     automation: AutomationConfig = Field(default_factory=AutomationConfig)
     demo_research: DemoResearchConfig = Field(default_factory=DemoResearchConfig)
+    research_policy: ResearchPolicyConfig = Field(default_factory=ResearchPolicyConfig)
     warm_start: WarmStartConfig = Field(default_factory=WarmStartConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     portfolio_exposure: PortfolioExposureConfig = Field(default_factory=PortfolioExposureConfig)
