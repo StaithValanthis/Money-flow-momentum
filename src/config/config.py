@@ -346,8 +346,22 @@ class WarmStartConfig(BaseModel):
     symbols_limit: int = Field(default=10, ge=1, le=200, description="Max symbols for warm-start (default 10 for bounded runtime)")
     require_profitable_seed: bool = True
     fallback_to_safe_seed_on_failure: bool = True
-    n_samples: int = Field(default=8, ge=3, le=100, description="Candidate parameter sets to replay-evaluate (default 8 for VM startup)")
-    max_runtime_seconds: int = Field(default=300, ge=30, le=3600, description="Hard limit: stop candidate search and use best-so-far or fallback")
+    n_samples: int = Field(default=8, ge=3, le=100, description="Candidate parameter sets to replay-evaluate when search_until_viable=False")
+    max_runtime_seconds: int = Field(default=300, ge=30, le=3600, description="Hard limit per run when search_until_viable=False")
+
+    # Iterative search-until-viable (Demo-only)
+    search_until_viable: bool = Field(default=False, description="If True, run batches until a viable seed is found or budget exhausted")
+    batch_n_samples: int = Field(default=8, ge=2, le=100, description="Candidates per batch when search_until_viable=True")
+    max_batches: int = Field(default=10, ge=1, le=100, description="Max search batches when search_until_viable=True")
+    max_total_runtime_seconds: int = Field(default=1800, ge=60, le=7200, description="Total wall-clock limit across all batches")
+    require_viable_seed_before_trading: bool = Field(
+        default=False,
+        description="If True, Demo must not start unless warm-start found a viable seed (no silent fallback)",
+    )
+    allow_fallback_if_no_viable_seed: bool = Field(
+        default=True,
+        description="When search exhausted with no viable seed: if True activate fallback; if False do not start trading",
+    )
 
     # Seed acceptance (Demo-only): replay winner must pass these before auto-activation
     min_replay_trade_count: int = Field(default=30, ge=1, le=10000, description="Min closed trades in replay to accept seed")

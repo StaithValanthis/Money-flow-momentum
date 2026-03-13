@@ -1031,6 +1031,11 @@ def register_stage3_cli(app: typer.Typer) -> None:
         typer.echo(f"seed_config_id: {result.get('seed_config_id') or 'none'}")
         typer.echo(f"fallback_used: {result.get('fallback_used', False)}")
         typer.echo(f"warm_start_used: {result.get('warm_start_used', False)}")
+        typer.echo(f"viable_seed_found: {result.get('viable_seed_found', False)}")
+        require_viable = bool(getattr(config.warm_start, "require_viable_seed_before_trading", False))
+        if require_viable and not result.get("viable_seed_found"):
+            typer.echo("Warm-start did not find a viable seed; require_viable_seed_before_trading=True so Demo trading should not start.")
+            raise typer.Exit(1)
         raise typer.Exit(0 if result.get("success") else 1)
     @warm_start_app.command("status")
     def warm_start_status_cmd(

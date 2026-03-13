@@ -1151,3 +1151,356 @@ def test_report_includes_acceptance_rejection_fields(tmp_path: Path, monkeypatch
     assert "profit_factor" in report or "profit_factor" in str(report.get("seed_acceptance_checks") or {})
     assert "max_drawdown" in report or "max_drawdown" in str(report.get("seed_acceptance_checks") or {})
 
+
+# --- Iterative search-until-viable tests ---
+
+
+def test_iterative_search_continues_after_first_batch_fails(tmp_path: Path, monkeypatch) -> None:
+    """Iterative search runs multiple batches when first batch winner fails acceptance."""
+    db_path = tmp_path / "demo.db"
+    Database(str(db_path)).close()
+    run_stage3_migrations(str(db_path))
+
+    cfg = Config()
+    cfg.database_path = str(db_path)
+    cfg.operating_mode = "demo_research"
+    cfg.artifacts_root = str(tmp_path / "artifacts")
+    cfg.warm_start = WarmStartConfig(
+        enabled=True,
+        candle_source="local",
+        search_until_viable=True,
+        batch_n_samples=4,
+        max_batches=5,
+        max_total_runtime_seconds=600,
+        allow_fallback_if_no_viable_seed=True,
+    )
+    env = EnvSettings()
+    env.bybit_env = "demo"
+
+    def _fake_load_config(_path=None):
+        return cfg, env
+
+    candles = [{"start_ts": 1000 + i * 60000, "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5} for i in range(30)]
+    monkeypatch.setattr("src.warm_start.runner.load_config", _fake_load_config)
+    monkeypatch.setattr("src.warm_start.runner.resolve_bybit_credentials", lambda *a, **k: ("k", "s", False, "demo"), raising=False)
+    monkeypatch.setattr("src.warm_start.runner.BybitClient", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr("src.warm_start.runner.load_cached_candles", lambda a, s: {"BTCUSDT": candles})
+
+    call_count = []
+
+    def _fake_search(_base, _candles, n_samples=8, **kwargs):
+        call_count.append(1)
+        from src.config.candidate_factory import build_config_from_params
+        params = {"entry.long_threshold": 1.5, "entry.short_threshold": -1.5}
+        c = build_config_from_params(_base, params)
+        if not c:
+            return None, [], {"candidates_invalid": 1, "candidates_replayed": 0, "no_trades_reason": None, "timeout_hit": False, "elapsed_seconds": 0.5, "candidate_count_requested": n_samples}
+        metrics = {"trade_count": 20, "total_pnl": 50.0, "return_pct": 0.5, "max_drawdown": 0.1}
+        meta = {"candidates_invalid": 0, "candidates_replayed": 2, "no_trades_reason": None, "timeout_hit": False, "elapsed_seconds": 0.5, "candidate_count_requested": n_samples}
+        return {"params": params, "oos_metrics": metrics, "config_id": "ws_0"}, [{"config_id": "ws_0", "params": params, "oos_metrics": metrics}], meta
+
+    monkeypatch.setattr("src.warm_start.runner.run_warm_start_candidate_search", _fake_search)
+    # First batch: reject; second batch: accept (so we need to return different acceptance by call count)
+    accept_after_batch: list[bool] = [False, True]
+
+    def _acceptance(*a, **k):
+        passed = accept_after_batch[0] if len(accept_after_batch) > 0 else False
+        if accept_after_batch:
+            accept_after_batch.pop(0)
+        checks = {"closed_trade_count": 20, "median_trade_duration_sec": 200, "ultra_short_trade_fraction": 0.1, "profit_factor": 1.5, "payoff_ratio": 1.2, "max_drawdown": 0.1}
+        return (passed, "" if passed else "trade_count_below_min", checks)
+
+    monkeypatch.setattr("src.warm_start.runner.passes_warm_start_seed_acceptance", _acceptance, raising=False)
+
+    result = run_warm_start_calibration(
+        demo_db_path=str(db_path),
+        config_path=None,
+        artifact_dir=tmp_path / "artifacts",
+    )
+    assert result.get("search_until_viable") is True
+    assert result.get("batches_completed") >= 2
+    assert result.get("viable_seed_found") is True
+    assert result.get("success") is True
+    assert result.get("seed_config_id") is not None
+    assert len(call_count) >= 2
+
+
+def test_iterative_search_stops_when_viable_seed_found_in_later_batch(tmp_path: Path, monkeypatch) -> None:
+    """Iterative search stops as soon as a batch produces an accepted seed."""
+    db_path = tmp_path / "demo.db"
+    Database(str(db_path)).close()
+    run_stage3_migrations(str(db_path))
+
+    cfg = Config()
+    cfg.database_path = str(db_path)
+    cfg.operating_mode = "demo_research"
+    cfg.artifacts_root = str(tmp_path / "artifacts")
+    cfg.warm_start = WarmStartConfig(
+        enabled=True,
+        candle_source="local",
+        search_until_viable=True,
+        batch_n_samples=4,
+        max_batches=10,
+        max_total_runtime_seconds=1800,
+    )
+    env = EnvSettings()
+    env.bybit_env = "demo"
+
+    def _fake_load_config(_path=None):
+        return cfg, env
+
+    candles = [{"start_ts": 1000 + i * 60000, "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5} for i in range(30)]
+    monkeypatch.setattr("src.warm_start.runner.load_config", _fake_load_config)
+    monkeypatch.setattr("src.warm_start.runner.resolve_bybit_credentials", lambda *a, **k: ("k", "s", False, "demo"), raising=False)
+    monkeypatch.setattr("src.warm_start.runner.BybitClient", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr("src.warm_start.runner.load_cached_candles", lambda a, s: {"BTCUSDT": candles})
+
+    batch_calls = []
+
+    def _fake_search(_base, _candles, n_samples=8, **kwargs):
+        batch_calls.append(1)
+        from src.config.candidate_factory import build_config_from_params
+        params = {"entry.long_threshold": 1.5, "entry.short_threshold": -1.5}
+        c = build_config_from_params(_base, params)
+        if not c:
+            return None, [], {"candidates_invalid": 1, "candidates_replayed": 0, "no_trades_reason": None, "timeout_hit": False, "elapsed_seconds": 0.5, "candidate_count_requested": n_samples}
+        metrics = {"trade_count": 40, "total_pnl": 100.0, "return_pct": 1.0, "max_drawdown": 0.1}
+        meta = {"candidates_invalid": 0, "candidates_replayed": 2, "no_trades_reason": None, "timeout_hit": False, "elapsed_seconds": 0.5, "candidate_count_requested": n_samples}
+        return {"params": params, "oos_metrics": metrics, "config_id": "ws_0"}, [{"config_id": "ws_0", "params": params, "oos_metrics": metrics}], meta
+
+    monkeypatch.setattr("src.warm_start.runner.run_warm_start_candidate_search", _fake_search)
+    monkeypatch.setattr(
+        "src.warm_start.runner.passes_warm_start_seed_acceptance",
+        lambda *a, **k: (True, "", {"closed_trade_count": 40, "median_trade_duration_sec": 200, "ultra_short_trade_fraction": 0.05, "profit_factor": 1.5, "payoff_ratio": 1.3, "max_drawdown": 0.1}),
+        raising=False,
+    )
+
+    result = run_warm_start_calibration(
+        demo_db_path=str(db_path),
+        config_path=None,
+        artifact_dir=tmp_path / "artifacts",
+    )
+    assert result.get("viable_seed_found") is True
+    assert result.get("batches_completed") == 1
+    assert len(batch_calls) == 1
+
+
+def test_search_exhaustion_with_fallback_allowed_activates_fallback(tmp_path: Path, monkeypatch) -> None:
+    """When search is exhausted and allow_fallback_if_no_viable_seed=True, fallback is activated."""
+    db_path = tmp_path / "demo.db"
+    Database(str(db_path)).close()
+    run_stage3_migrations(str(db_path))
+
+    cfg = Config()
+    cfg.database_path = str(db_path)
+    cfg.operating_mode = "demo_research"
+    cfg.artifacts_root = str(tmp_path / "artifacts")
+    cfg.warm_start = WarmStartConfig(
+        enabled=True,
+        candle_source="local",
+        search_until_viable=True,
+        batch_n_samples=4,
+        max_batches=2,
+        max_total_runtime_seconds=600,
+        allow_fallback_if_no_viable_seed=True,
+    )
+    env = EnvSettings()
+    env.bybit_env = "demo"
+
+    def _fake_load_config(_path=None):
+        return cfg, env
+
+    candles = [{"start_ts": 1000 + i * 60000, "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5} for i in range(30)]
+    monkeypatch.setattr("src.warm_start.runner.load_config", _fake_load_config)
+    monkeypatch.setattr("src.warm_start.runner.resolve_bybit_credentials", lambda *a, **k: ("k", "s", False, "demo"), raising=False)
+    monkeypatch.setattr("src.warm_start.runner.BybitClient", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr("src.warm_start.runner.load_cached_candles", lambda a, s: {"BTCUSDT": candles})
+
+    def _fake_search_no_winner(*args, **kwargs):
+        return None, [], {"candidates_invalid": 0, "candidates_replayed": 2, "no_trades_reason": "all_zero_trades", "timeout_hit": False, "elapsed_seconds": 0.5, "candidate_count_requested": 4}
+
+    monkeypatch.setattr("src.warm_start.runner.run_warm_start_candidate_search", _fake_search_no_winner)
+
+    result = run_warm_start_calibration(
+        demo_db_path=str(db_path),
+        config_path=None,
+        artifact_dir=tmp_path / "artifacts",
+    )
+    assert result.get("search_exhausted") is True
+    assert result.get("viable_seed_found") is False
+    assert result.get("batches_completed") == 2
+    assert result.get("fallback_used") is True
+    assert result.get("success") is True
+    assert result.get("seed_config_id") is not None
+    assert result.get("search_exhausted") is True
+    assert result.get("reason") == "fallback_seed_activated"
+
+
+def test_search_exhaustion_with_fallback_disallowed_does_not_start_trading(tmp_path: Path, monkeypatch) -> None:
+    """When search exhausted and allow_fallback_if_no_viable_seed=False, no fallback and no seed activated."""
+    db_path = tmp_path / "demo.db"
+    Database(str(db_path)).close()
+    run_stage3_migrations(str(db_path))
+
+    cfg = Config()
+    cfg.database_path = str(db_path)
+    cfg.operating_mode = "demo_research"
+    cfg.artifacts_root = str(tmp_path / "artifacts")
+    cfg.warm_start = WarmStartConfig(
+        enabled=True,
+        candle_source="local",
+        search_until_viable=True,
+        batch_n_samples=4,
+        max_batches=2,
+        max_total_runtime_seconds=600,
+        allow_fallback_if_no_viable_seed=False,
+    )
+    env = EnvSettings()
+    env.bybit_env = "demo"
+
+    def _fake_load_config(_path=None):
+        return cfg, env
+
+    candles = [{"start_ts": 1000 + i * 60000, "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5} for i in range(30)]
+    monkeypatch.setattr("src.warm_start.runner.load_config", _fake_load_config)
+    monkeypatch.setattr("src.warm_start.runner.resolve_bybit_credentials", lambda *a, **k: ("k", "s", False, "demo"), raising=False)
+    monkeypatch.setattr("src.warm_start.runner.BybitClient", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr("src.warm_start.runner.load_cached_candles", lambda a, s: {"BTCUSDT": candles})
+
+    def _fake_search_no_winner(*args, **kwargs):
+        return None, [], {"candidates_invalid": 0, "candidates_replayed": 2, "no_trades_reason": "all_zero_trades", "timeout_hit": False, "elapsed_seconds": 0.5, "candidate_count_requested": 4}
+
+    monkeypatch.setattr("src.warm_start.runner.run_warm_start_candidate_search", _fake_search_no_winner)
+
+    result = run_warm_start_calibration(
+        demo_db_path=str(db_path),
+        config_path=None,
+        artifact_dir=tmp_path / "artifacts",
+    )
+    assert result.get("search_exhausted") is True
+    assert result.get("viable_seed_found") is False
+    assert result.get("fallback_used") is False
+    assert result.get("reason") == "no_viable_seed_search_exhausted"
+    assert result.get("seed_config_id") is None
+    assert result.get("success") is False
+
+
+def test_iterative_report_includes_batch_and_viable_seed_fields(tmp_path: Path, monkeypatch) -> None:
+    """Warm-start report includes search_until_viable, batches_completed, viable_seed_found, search_exhausted, etc."""
+    db_path = tmp_path / "demo.db"
+    Database(str(db_path)).close()
+    run_stage3_migrations(str(db_path))
+
+    cfg = Config()
+    cfg.database_path = str(db_path)
+    cfg.operating_mode = "demo_research"
+    cfg.artifacts_root = str(tmp_path / "artifacts")
+    cfg.warm_start = WarmStartConfig(
+        enabled=True,
+        candle_source="local",
+        search_until_viable=True,
+        batch_n_samples=4,
+        max_batches=3,
+        require_viable_seed_before_trading=True,
+    )
+    env = EnvSettings()
+    env.bybit_env = "demo"
+
+    def _fake_load_config(_path=None):
+        return cfg, env
+
+    candles = [{"start_ts": 1000 + i * 60000, "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5} for i in range(30)]
+    monkeypatch.setattr("src.warm_start.runner.load_config", _fake_load_config)
+    monkeypatch.setattr("src.warm_start.runner.resolve_bybit_credentials", lambda *a, **k: ("k", "s", False, "demo"), raising=False)
+    monkeypatch.setattr("src.warm_start.runner.BybitClient", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr("src.warm_start.runner.load_cached_candles", lambda a, s: {"BTCUSDT": candles})
+
+    def _fake_search(*args, **kwargs):
+        from src.config.candidate_factory import build_config_from_params
+        params = {"entry.long_threshold": 1.5, "entry.short_threshold": -1.5}
+        c = build_config_from_params(cfg, params)
+        if c:
+            metrics = {"trade_count": 50, "total_pnl": 80.0, "return_pct": 0.8, "max_drawdown": 0.1}
+            meta = {"candidates_invalid": 0, "candidates_replayed": 2, "no_trades_reason": None, "timeout_hit": False, "elapsed_seconds": 0.5, "candidate_count_requested": 4}
+            return {"params": params, "oos_metrics": metrics, "config_id": "ws_0"}, [{"config_id": "ws_0", "params": params, "oos_metrics": metrics}], meta
+        return None, [], {"candidates_invalid": 0, "candidates_replayed": 0, "timeout_hit": False, "elapsed_seconds": 0.5, "candidate_count_requested": 4}
+
+    monkeypatch.setattr("src.warm_start.runner.run_warm_start_candidate_search", _fake_search)
+    monkeypatch.setattr(
+        "src.warm_start.runner.passes_warm_start_seed_acceptance",
+        lambda *a, **k: (True, "", {"closed_trade_count": 50, "median_trade_duration_sec": 200, "ultra_short_trade_fraction": 0.1, "profit_factor": 1.5, "payoff_ratio": 1.2, "max_drawdown": 0.1}),
+        raising=False,
+    )
+
+    result = run_warm_start_calibration(
+        demo_db_path=str(db_path),
+        config_path=None,
+        artifact_dir=tmp_path / "artifacts",
+    )
+    assert result.get("search_until_viable") is True
+    assert "batches_completed" in result
+    assert "max_batches" in result
+    assert "max_total_runtime_seconds" in result
+    assert result.get("viable_seed_found") is True
+    assert "total_candidates_requested" in result
+    assert "total_candidates_evaluated" in result
+    assert "require_viable_seed_before_trading" in result
+
+    report_path = tmp_path / "artifacts" / "warm_start" / "warm_start_report.json"
+    assert report_path.exists()
+    import json
+    with open(report_path, encoding="utf-8") as f:
+        report = json.load(f)
+    assert report.get("search_until_viable") is True
+    assert "batches_completed" in report
+    assert report.get("viable_seed_found") is True
+    assert "search_exhausted" in report
+    assert "require_viable_seed_before_trading" in report
+
+
+def test_require_viable_seed_before_trading_result_has_viable_seed_found(tmp_path: Path, monkeypatch) -> None:
+    """When require_viable_seed_before_trading is set, result.viable_seed_found reflects whether a viable seed was found."""
+    db_path = tmp_path / "demo.db"
+    Database(str(db_path)).close()
+    run_stage3_migrations(str(db_path))
+
+    cfg = Config()
+    cfg.database_path = str(db_path)
+    cfg.operating_mode = "demo_research"
+    cfg.artifacts_root = str(tmp_path / "artifacts")
+    cfg.warm_start = WarmStartConfig(
+        enabled=True,
+        candle_source="local",
+        search_until_viable=True,
+        batch_n_samples=4,
+        max_batches=2,
+        allow_fallback_if_no_viable_seed=False,
+        require_viable_seed_before_trading=True,
+    )
+    env = EnvSettings()
+    env.bybit_env = "demo"
+
+    def _fake_load_config(_path=None):
+        return cfg, env
+
+    candles = [{"start_ts": 1000 + i * 60000, "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5} for i in range(30)]
+    monkeypatch.setattr("src.warm_start.runner.load_config", _fake_load_config)
+    monkeypatch.setattr("src.warm_start.runner.resolve_bybit_credentials", lambda *a, **k: ("k", "s", False, "demo"), raising=False)
+    monkeypatch.setattr("src.warm_start.runner.BybitClient", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr("src.warm_start.runner.load_cached_candles", lambda a, s: {"BTCUSDT": candles})
+
+    def _fake_search_no_winner(*args, **kwargs):
+        return None, [], {"candidates_invalid": 0, "candidates_replayed": 2, "no_trades_reason": "all_zero_trades", "timeout_hit": False, "elapsed_seconds": 0.5, "candidate_count_requested": 4}
+
+    monkeypatch.setattr("src.warm_start.runner.run_warm_start_candidate_search", _fake_search_no_winner)
+
+    result = run_warm_start_calibration(
+        demo_db_path=str(db_path),
+        config_path=None,
+        artifact_dir=tmp_path / "artifacts",
+    )
+    assert result.get("require_viable_seed_before_trading") is True
+    assert result.get("viable_seed_found") is False
+    assert result.get("success") is False
+    assert result.get("search_exhausted") is True
+

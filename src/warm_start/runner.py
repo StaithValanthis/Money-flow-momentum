@@ -135,6 +135,7 @@ def run_warm_start_calibration(
         "seed_config_id": None,
         "fallback_used": False,
         "warm_start_used": False,
+        "viable_seed_found": False,
         "trade_count_synthetic": 0,
         "optimizer_run_id": None,
         "error": None,
@@ -161,6 +162,16 @@ def run_warm_start_calibration(
         "profit_factor": None,
         "payoff_ratio": None,
         "max_drawdown": None,
+        "search_until_viable": False,
+        "batches_completed": 0,
+        "max_batches": None,
+        "max_total_runtime_seconds": None,
+        "total_candidates_requested": 0,
+        "total_candidates_evaluated": 0,
+        "total_candidates_replayed": 0,
+        "best_rejection_reason_seen": None,
+        "search_exhausted": False,
+        "require_viable_seed_before_trading": False,
     }
     calibration_start = time.time()
 
@@ -255,20 +266,172 @@ def run_warm_start_calibration(
     baseline_config = config
     n_samples = int(getattr(warm, "n_samples", 8))
     max_runtime_seconds = int(getattr(warm, "max_runtime_seconds", 300) or 0) or None
+    search_until_viable = bool(getattr(warm, "search_until_viable", False))
+    batch_n_samples = int(getattr(warm, "batch_n_samples", 8))
+    max_batches = int(getattr(warm, "max_batches", 10))
+    max_total_runtime_seconds = int(getattr(warm, "max_total_runtime_seconds", 1800) or 0) or 1800
+    allow_fallback_if_no_viable_seed = bool(getattr(warm, "allow_fallback_if_no_viable_seed", True))
+    require_viable_seed_before_trading = bool(getattr(warm, "require_viable_seed_before_trading", False))
 
-    log.info("Warm-start candidate search started (n_samples=%s, max_runtime_seconds=%s)", n_samples, max_runtime_seconds)
-    # --- Primary path: parameter-aware replay (evaluate each candidate via replay on candles) ---
+    result["search_until_viable"] = search_until_viable
+    result["require_viable_seed_before_trading"] = require_viable_seed_before_trading
+    if search_until_viable:
+        result["max_batches"] = max_batches
+        result["max_total_runtime_seconds"] = max_total_runtime_seconds
+
+    # --- Iterative batch search (search_until_viable=True) ---
+    if search_until_viable:
+        total_requested = 0
+        total_replayed = 0
+        total_invalid = 0
+        best_rejection_reason_seen: Optional[str] = None
+        for batch_num in range(max_batches):
+            elapsed = time.time() - calibration_start
+            if elapsed >= max_total_runtime_seconds:
+                log.info("Warm-start total runtime budget reached (%.0fs); stopping after %d batches", max_total_runtime_seconds, batch_num)
+                break
+            remaining = max(60, int(max_total_runtime_seconds - elapsed))
+            log.info("Warm-start batch %d/%d (n_samples=%s, remaining_runtime=%ss)", batch_num + 1, max_batches, batch_n_samples, remaining)
+            try:
+                best, all_results, search_meta = run_warm_start_candidate_search(
+                    baseline_config,
+                    candles_by_symbol,
+                    n_samples=batch_n_samples,
+                    min_trades_guardrail=5,
+                    require_profitable=require_profitable,
+                    max_runtime_seconds=remaining,
+                    start_time=calibration_start,
+                )
+            except Exception as e:
+                log.warning("Warm-start batch %d failed: %s", batch_num + 1, e)
+                result["error"] = str(e)
+                total_invalid += batch_n_samples
+                total_requested += batch_n_samples
+                result["batches_completed"] = batch_num + 1
+                result["total_candidates_requested"] = total_requested
+                result["total_candidates_evaluated"] = total_replayed
+                result["total_candidates_replayed"] = total_replayed
+                result["candidates_invalid"] = total_invalid
+                continue
+            batch_requested = search_meta.get("candidate_count_requested", batch_n_samples)
+            batch_replayed = search_meta.get("candidates_replayed", 0)
+            batch_invalid = search_meta.get("candidates_invalid", 0)
+            total_requested += batch_requested
+            total_replayed += batch_replayed
+            total_invalid += batch_invalid
+            result["batches_completed"] = batch_num + 1
+            result["total_candidates_requested"] = total_requested
+            result["total_candidates_evaluated"] = total_replayed
+            result["total_candidates_replayed"] = total_replayed
+            result["candidates_invalid"] = total_invalid
+            result["no_trades_reason"] = search_meta.get("no_trades_reason")
+            result["timeout_hit"] = search_meta.get("timeout_hit", False)
+            result["elapsed_seconds"] = round(time.time() - calibration_start, 2)
+
+            if best is not None:
+                winning_config = build_config_from_params(baseline_config, best["params"])
+                if winning_config:
+                    try:
+                        winner_trades, _ = replay_strategy_from_candles(winning_config, candles_by_symbol)
+                        durations_sec = get_trade_durations_sec(winner_trades)
+                    except Exception as e:
+                        log.warning("Warm-start re-replay for acceptance failed: %s", e)
+                        durations_sec = []
+                    metrics = best.get("oos_metrics") or {}
+                    accepted, rejection_reason, acceptance_checks = passes_warm_start_seed_acceptance(
+                        metrics,
+                        config,
+                        durations_sec=durations_sec,
+                        fees_summary=float(metrics.get("fees_summary") or 0),
+                        slippage_summary=float(metrics.get("slippage_summary") or 0),
+                    )
+                    if rejection_reason:
+                        best_rejection_reason_seen = rejection_reason
+                    result["seed_acceptance_checks"] = acceptance_checks
+                    result["ultra_short_trade_fraction"] = acceptance_checks.get("ultra_short_trade_fraction")
+                    result["median_trade_duration_sec"] = acceptance_checks.get("median_trade_duration_sec")
+                    result["profit_factor"] = acceptance_checks.get("profit_factor")
+                    result["payoff_ratio"] = acceptance_checks.get("payoff_ratio")
+                    result["max_drawdown"] = acceptance_checks.get("max_drawdown")
+                    result["seed_acceptance_passed"] = accepted
+                    result["seed_rejection_reason"] = rejection_reason if not accepted else None
+                    result["best_rejection_reason_seen"] = best_rejection_reason_seen
+                    result["best_candidate_metrics"] = metrics
+
+                    if accepted:
+                        result["viable_seed_found"] = True
+                        result["engine"] = "parameter_aware_replay"
+                        log.info("Warm-start viable seed found in batch %d; activating", batch_num + 1)
+                        run_stage3_migrations(demo_db_path)
+                        demo_artifact_dir = Path(artifact_dir) / "configs"
+                        demo_artifact_dir.mkdir(parents=True, exist_ok=True)
+                        new_id = register_config_version(
+                            winning_config,
+                            version="warm_start_seed",
+                            status="candidate",
+                            description="Warm-start calibration seed (parameter-aware replay)",
+                            source="warm_start",
+                            parent_config_id=None,
+                            db_path=demo_db_path,
+                            artifact_dir=demo_artifact_dir,
+                        )
+                        if activate_config_version(new_id, demo_db_path, reason="warm_start", manual=False):
+                            result["success"] = True
+                            result["seed_config_id"] = new_id
+                            result["warm_start_used"] = True
+                            result["reason"] = "warm_start_seeded"
+                            result["engine_meta"] = {
+                                "candidate_count_evaluated": total_replayed,
+                                "best_candidate_config_id": new_id,
+                                "best_candidate_metrics": best.get("oos_metrics"),
+                                "batches_completed": batch_num + 1,
+                                "window_from_ts_ms": from_ts_ms,
+                                "window_to_ts_ms": to_ts_ms,
+                                "symbols": result["symbols"],
+                                "timeframe": interval,
+                            }
+                            result["best_candidate_config_id"] = new_id
+                            result["candidate_count_evaluated"] = total_replayed
+                            result["fallback_used"] = False
+                            result["trade_count_synthetic"] = int((best.get("oos_metrics") or {}).get("trade_count") or 0)
+                            log.info("Warm-start final seed activated: config_id=%s", new_id)
+                            _write_warm_start_artifact(artifact_dir, result, config)
+                            return result
+                    else:
+                        log.info("Warm-start batch %d winner rejected by acceptance: %s", batch_num + 1, rejection_reason)
+            else:
+                if search_meta.get("no_trades_reason"):
+                    best_rejection_reason_seen = search_meta.get("no_trades_reason")
+
+        result["search_exhausted"] = True
+        result["viable_seed_found"] = False
+        result["best_rejection_reason_seen"] = best_rejection_reason_seen
+        result["elapsed_seconds"] = round(time.time() - calibration_start, 2)
+        result["reason"] = "no_viable_seed_search_exhausted"
+        result["engine"] = "parameter_aware_replay"
+        log.info("Warm-start search exhausted after %d batches; no viable seed", result["batches_completed"])
+        if allow_fallback_if_no_viable_seed:
+            log.info("Warm-start fallback: search exhausted without viable seed; activating conservative seed")
+            _apply_fallback_seed(demo_db_path, config, artifact_dir, result)
+        else:
+            _write_warm_start_artifact(artifact_dir, result, config)
+        return result
+
+    # --- Single-batch path (search_until_viable=False): parameter-aware replay ---
+    n_samples_use = n_samples
+    max_runtime_use = max_runtime_seconds
+    log.info("Warm-start candidate search started (n_samples=%s, max_runtime_seconds=%s)", n_samples_use, max_runtime_use)
     try:
         best, all_results, search_meta = run_warm_start_candidate_search(
             baseline_config,
             candles_by_symbol,
-            n_samples=n_samples,
+            n_samples=n_samples_use,
             min_trades_guardrail=5,
             require_profitable=require_profitable,
-            max_runtime_seconds=max_runtime_seconds,
+            max_runtime_seconds=max_runtime_use,
             start_time=calibration_start,
         )
-        result["candidate_count_requested"] = search_meta.get("candidate_count_requested", n_samples)
+        result["candidate_count_requested"] = search_meta.get("candidate_count_requested", n_samples_use)
         result["candidates_invalid"] = search_meta.get("candidates_invalid")
         result["candidates_replayed"] = search_meta.get("candidates_replayed")
         result["candidate_count_evaluated"] = search_meta.get("candidates_replayed")
@@ -311,6 +474,7 @@ def run_warm_start_calibration(
                     result["candidate_count_evaluated"] = len(all_results)
                     result["engine"] = "parameter_aware_replay"
                     result["elapsed_seconds"] = round(time.time() - calibration_start, 2)
+                    result["viable_seed_found"] = False
                     log.info("Warm-start replay winner rejected by seed acceptance: %s", rejection_reason)
                     if fallback:
                         log.info("Warm-start fallback: replay winner rejected; activating conservative seed")
@@ -320,6 +484,7 @@ def run_warm_start_calibration(
 
                 result["seed_acceptance_passed"] = True
                 result["seed_rejection_reason"] = None
+                result["viable_seed_found"] = True
                 log.info("Warm-start best candidate selected and passed seed acceptance; activating seed")
                 run_stage3_migrations(demo_db_path)
                 demo_artifact_dir = Path(artifact_dir) / "configs"
@@ -359,6 +524,7 @@ def run_warm_start_calibration(
                     result["trade_count_synthetic"] = int((best.get("oos_metrics") or {}).get("trade_count") or 0)
                     if result.get("timeout_hit"):
                         result["reason"] = "warm_start_seeded_timeout_best_so_far"
+                    result["viable_seed_found"] = True
                     log.info("Warm-start final seed activated: config_id=%s", new_id)
                     _write_warm_start_artifact(artifact_dir, result, config)
                     return result
@@ -533,11 +699,13 @@ def run_warm_start_calibration(
                 result["reason"] = "warm_start_seeded"
                 result["best_candidate_config_id"] = new_id
                 result["best_candidate_metrics"] = metrics
+                result["viable_seed_found"] = True
                 _write_warm_start_artifact(artifact_dir, result, config)
                 return result
             result["reason"] = "activation_failed"
         else:
             result["reason"] = result.get("reason") or "no_acceptable_candidate"
+            result["viable_seed_found"] = False
             result["seed_acceptance_passed"] = False
             result["seed_rejection_reason"] = result["reason"]
             result["seed_acceptance_checks"] = {}
@@ -579,6 +747,7 @@ def _apply_fallback_seed(
         result["seed_config_id"] = fallback_id
         result["success"] = True
         result["reason"] = "fallback_seed_activated"
+        result["viable_seed_found"] = False
     else:
         result["reason"] = "fallback_activation_failed"
     _write_warm_start_artifact(artifact_dir, result, config)
