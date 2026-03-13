@@ -111,8 +111,8 @@ def test_warm_start_uses_strategy_replay_engine_primary(tmp_path: Path, monkeypa
         config_path=None,
         artifact_dir=tmp_path / "artifacts",
     )
-    assert result.get("engine") in ("parameter_aware_replay", "strategy_replay")
-    # Either warm-start path uses strategy replay (parameter-aware replays per candidate; fallback replays once).
+    assert result.get("engine") in ("parameter_aware_backtest", "strategy_replay")
+    # Either warm-start path uses strategy replay/backtest (parameter-aware per candidate; fallback replays once).
     assert "synthetic_momentum_proxy" not in str(result.get("engine_meta", {}))
 
 
@@ -445,7 +445,6 @@ def test_warm_start_attempts_strategy_replay_before_synthetic(tmp_path: Path, mo
         raise RuntimeError("strategy replay failed")
 
     monkeypatch.setattr("src.warm_start.runner.replay_strategy_from_candles", _boom_replay)
-    monkeypatch.setattr("src.warm_start.candidate_search.replay_strategy_from_candles", _boom_replay)
 
     result = run_warm_start_calibration(
         demo_db_path=str(db_path),
@@ -516,7 +515,7 @@ def test_parameter_aware_warm_start_evaluates_multiple_candidates(tmp_path: Path
         artifact_dir=tmp_path / "artifacts",
     )
     assert call_count == [1]
-    assert result.get("engine") == "parameter_aware_replay"
+    assert result.get("engine") == "parameter_aware_backtest"
     assert result.get("candidate_count_evaluated") == 5
     assert result.get("best_candidate_config_id") is not None
     assert result.get("best_candidate_metrics") is not None
@@ -632,7 +631,7 @@ def test_warm_start_report_includes_candidate_fields(tmp_path: Path, monkeypatch
     import json
     with open(report_path, encoding="utf-8") as f:
         report = json.load(f)
-    assert report.get("engine") == "parameter_aware_replay"
+    assert report.get("engine") == "parameter_aware_backtest"
     assert "candidate_count_evaluated" in report
     assert "best_candidate_config_id" in report
     assert "best_candidate_metrics" in report
@@ -696,6 +695,28 @@ def test_replay_produces_nonzero_trades_on_representative_candle_fixture() -> No
     assert meta.get("trade_count") == len([t for t in trades if t.get("pnl") is not None])
     # With permissive config and opposing-trend fixture, replay path is exercised; nonzero trades expected in most runs
     assert trade_count >= 0
+
+
+def test_backtest_engine_applies_fees_and_slippage() -> None:
+    """Backtest engine reduces edge compared with zero-cost replay for the same candles."""
+    from src.warm_start.backtest_engine import run_backtest_on_candles
+
+    cfg = Config()
+    cfg.operating_mode = "demo_research"
+    candles = {
+        "BTCUSDT": [
+            {"start_ts": 1000 + i * 60000, "open": 100.0 + i, "high": 101.0 + i, "low": 99.0 + i, "close": 100.5 + i}
+            for i in range(20)
+        ]
+    }
+    # Zero-cost baseline
+    trades_zero, metrics_zero, _ = run_backtest_on_candles(cfg, candles, fee_bps=0.0, slippage_bps=0.0)
+    # Non-zero costs
+    trades_cost, metrics_cost, _ = run_backtest_on_candles(cfg, candles, fee_bps=10.0, slippage_bps=5.0)
+    assert len(trades_zero) == len(trades_cost)
+    assert metrics_cost["total_pnl"] <= metrics_zero["total_pnl"]
+    assert metrics_cost["fees_summary"] >= 0
+    assert metrics_cost["slippage_summary"] >= 0
 
 
 def test_warm_start_fallback_when_no_viable_candidate(tmp_path: Path, monkeypatch) -> None:

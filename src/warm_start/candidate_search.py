@@ -17,11 +17,9 @@ from src.optimizer.parameter_space import get_bounded_space
 from src.optimizer.objectives import composite_objective
 from src.optimizer.guardrails import check_guardrails, GuardrailResult
 from src.optimizer.candidate_selector import select_best_candidate
-from src.evaluation.metrics import compute_core_metrics
-from src.evaluation.datasets import compute_realized_pnl_by_pairing
 from src.utils.logging import get_logger
 
-from src.warm_start.strategy_replay import replay_strategy_from_candles
+from src.warm_start.backtest_engine import run_backtest_on_candles
 
 log = get_logger(__name__)
 
@@ -74,15 +72,17 @@ def run_warm_start_candidate_search(
             candidates_invalid += 1
             continue
         try:
-            trades, replay_meta = replay_strategy_from_candles(candidate_config, candles_by_symbol)
+            # Backtest-style evaluation with configured fees/slippage from baseline_config.warm_start
+            warm = getattr(baseline_config, "warm_start", None)
+            fee_bps = float(getattr(warm, "backtest_fee_bps", 6.0)) if warm else 6.0
+            slippage_bps = float(getattr(warm, "backtest_slippage_bps", 2.0)) if warm else 2.0
+            trades, metrics, replay_meta = run_backtest_on_candles(candidate_config, candles_by_symbol, fee_bps, slippage_bps)
         except Exception as e:
-            log.debug("Warm-start replay candidate %s: %s", i, e)
+            log.debug("Warm-start backtest candidate %s: %s", i, e)
             candidates_invalid += 1
             continue
-        trade_count = replay_meta.get("trade_count", 0) or len([t for t in trades if t.get("pnl") is not None])
+        trade_count = int(metrics.get("trade_count") or replay_meta.get("trade_count") or 0)
         replay_trade_counts.append(trade_count)
-        paired = compute_realized_pnl_by_pairing(trades)
-        metrics = compute_core_metrics(paired)
         gr = check_guardrails(
             metrics,
             metrics,
@@ -102,7 +102,7 @@ def run_warm_start_candidate_search(
         if gr.passed and (best_score_so_far is None or score > best_score_so_far):
             best_score_so_far = score
         log.info(
-            "Warm-start candidate %d/%d replayed trades=%s score=%.4f best_so_far=%s",
+            "Warm-start candidate %d/%d backtested trades=%s score=%.4f best_so_far=%s",
             i + 1,
             len(param_samples),
             trade_count,

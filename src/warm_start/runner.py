@@ -360,7 +360,7 @@ def run_warm_start_calibration(
 
                     if accepted:
                         result["viable_seed_found"] = True
-                        result["engine"] = "parameter_aware_replay"
+                        result["engine"] = "parameter_aware_backtest"
                         log.info("Warm-start viable seed found in batch %d; activating", batch_num + 1)
                         run_stage3_migrations(demo_db_path)
                         demo_artifact_dir = Path(artifact_dir) / "configs"
@@ -408,7 +408,7 @@ def run_warm_start_calibration(
         result["best_rejection_reason_seen"] = best_rejection_reason_seen
         result["elapsed_seconds"] = round(time.time() - calibration_start, 2)
         result["reason"] = "no_viable_seed_search_exhausted"
-        result["engine"] = "parameter_aware_replay"
+        result["engine"] = "parameter_aware_backtest"
         log.info("Warm-start search exhausted after %d batches; no viable seed", result["batches_completed"])
         if allow_fallback_if_no_viable_seed:
             log.info("Warm-start fallback: search exhausted without viable seed; activating conservative seed")
@@ -472,7 +472,7 @@ def run_warm_start_calibration(
                     result["best_candidate_config_id"] = None
                     result["best_candidate_metrics"] = metrics
                     result["candidate_count_evaluated"] = len(all_results)
-                    result["engine"] = "parameter_aware_replay"
+                    result["engine"] = "parameter_aware_backtest"
                     result["elapsed_seconds"] = round(time.time() - calibration_start, 2)
                     result["viable_seed_found"] = False
                     log.info("Warm-start replay winner rejected by seed acceptance: %s", rejection_reason)
@@ -504,7 +504,7 @@ def run_warm_start_calibration(
                     result["seed_config_id"] = new_id
                     result["warm_start_used"] = True
                     result["reason"] = "warm_start_seeded"
-                    result["engine"] = "parameter_aware_replay"
+                    result["engine"] = "parameter_aware_backtest"
                     result["engine_meta"] = {
                         "candidate_count_evaluated": len(all_results),
                         "best_candidate_config_id": new_id,

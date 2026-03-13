@@ -386,6 +386,20 @@ class WarmStartConfig(BaseModel):
         description="When search exhausted with no viable seed: if True activate fallback; if False do not start trading",
     )
 
+    # Backtest-style historical evaluation costs (Demo-only; do not affect Live runtime)
+    backtest_fee_bps: float = Field(
+        default=6.0,
+        ge=0.0,
+        le=100.0,
+        description="Per-side fee in basis points for backtest-style warm-start evaluation",
+    )
+    backtest_slippage_bps: float = Field(
+        default=2.0,
+        ge=0.0,
+        le=100.0,
+        description="Per-side slippage estimate in basis points for backtest-style warm-start evaluation",
+    )
+
     # Seed acceptance (Demo-only): replay winner must pass these before auto-activation
     min_replay_trade_count: int = Field(default=30, ge=1, le=10000, description="Min closed trades in replay to accept seed")
     min_win_rate: float = Field(default=0.18, ge=0.0, le=1.0, description="Min win rate to accept seed")
