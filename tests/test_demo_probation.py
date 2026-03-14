@@ -102,10 +102,11 @@ def test_probation_evaluator_fail_kill_switch(demo_db, config_with_probation):
     conn.execute("INSERT INTO kill_switch_events (ts, reason) VALUES (?, ?)", (started + 1000, "test"))
     conn.commit()
     db.close()
-    status, lifecycle, reasons, metrics = evaluate_probation(demo_db, config_with_probation, config_id=cid)
+    status, lifecycle, reasons, metrics, failure_type = evaluate_probation(demo_db, config_with_probation, config_id=cid)
     assert status == PROBATION_STATUS_FAILED
     assert lifecycle == LIFECYCLE_DEMO_PROBATION_FAILED
     assert "kill_switch_hit" in reasons
+    assert failure_type in ("fail_fast_kill_switch", "timer_evaluated")
 
 
 def test_probation_evaluator_fail_consecutive_losses(demo_db, config_with_probation):
@@ -134,9 +135,10 @@ def test_probation_evaluator_fail_consecutive_losses(demo_db, config_with_probat
         )
     conn.commit()
     db.close()
-    status, lifecycle, reasons, metrics = evaluate_probation(demo_db, config_with_probation, config_id=cid)
+    status, lifecycle, reasons, metrics, failure_type = evaluate_probation(demo_db, config_with_probation, config_id=cid)
     assert status == PROBATION_STATUS_FAILED
     assert "max_consecutive_losses_breach" in reasons or "max_consecutive_losses" in str(reasons)
+    assert failure_type == "fail_fast_consecutive_losses"
 
 
 def test_probation_evaluator_in_progress_insufficient_sample(demo_db, config_with_probation):
@@ -164,9 +166,10 @@ def test_probation_evaluator_in_progress_insufficient_sample(demo_db, config_wit
         )
     conn.commit()
     db.close()
-    status, lifecycle, reasons, metrics = evaluate_probation(demo_db, config_with_probation, config_id=cid)
+    status, lifecycle, reasons, metrics, failure_type = evaluate_probation(demo_db, config_with_probation, config_id=cid)
     assert status == PROBATION_STATUS_IN_PROGRESS
     assert "sample_or_runtime_not_reached" in reasons
+    assert failure_type is None
 
 
 def test_probation_evaluator_pass(demo_db, config_with_probation):
@@ -195,10 +198,11 @@ def test_probation_evaluator_pass(demo_db, config_with_probation):
         )
     conn.commit()
     db.close()
-    status, lifecycle, reasons, metrics = evaluate_probation(demo_db, config_with_probation, config_id=cid)
+    status, lifecycle, reasons, metrics, failure_type = evaluate_probation(demo_db, config_with_probation, config_id=cid)
     assert status == PROBATION_STATUS_PASSED
     assert lifecycle == LIFECYCLE_DEMO_PROBATION_PASSED
     assert "passed" in reasons
+    assert failure_type is None
 
 
 def test_probation_failed_marked(demo_db, config_with_probation):
@@ -217,11 +221,12 @@ def test_probation_failed_marked(demo_db, config_with_probation):
     apply_probation_result(
         cid, demo_db, config_with_probation,
         PROBATION_STATUS_FAILED, LIFECYCLE_DEMO_PROBATION_FAILED,
-        ["kill_switch_hit"], {"closed_trades": 0},
+        ["kill_switch_hit"], {"closed_trades": 0}, failure_reason_type="fail_fast_kill_switch",
     )
     rec = get_probation_record(cid, demo_db)
     assert rec["lifecycle_state"] == LIFECYCLE_DEMO_PROBATION_FAILED
     assert rec["ended_at_ts"] is not None
+    assert rec.get("failure_reason_type") == "fail_fast_kill_switch"
 
 
 def test_probation_passed_promoted(demo_db, config_with_probation):
@@ -277,7 +282,7 @@ def test_demo_probation_disabled_no_candidate(demo_db):
     cfg.database_path = demo_db
     cfg.demo_probation = DemoProbationConfig(enabled=False)
     run_stage3_migrations(demo_db)
-    status, lifecycle, reasons, metrics = evaluate_probation(demo_db, cfg)
+    status, lifecycle, reasons, metrics, _ = evaluate_probation(demo_db, cfg)
     assert "probation_disabled" in reasons or "no_probation_candidate" in reasons
 
 
@@ -301,3 +306,138 @@ def test_demo_init_registers_probation_candidate_when_enabled(demo_db, config_wi
     assert rec is not None
     assert rec["lifecycle_state"] == LIFECYCLE_DEMO_PROBATION
     assert rec["config_id"] == cid
+
+
+def test_fail_fast_hard_block(demo_db, config_with_probation):
+    """Probation fails with fail_fast_hard_block when automation state is BLOCKED or burnin breach."""
+    import time as _time
+    from src.demo_probation.evaluator import FAILURE_REASON_FAIL_FAST_HARD_BLOCK
+    ensure_stage3_schema(demo_db)
+    cid = register_config_version(
+        config_with_probation,
+        version="test",
+        status="candidate",
+        description="test",
+        source="manual",
+        db_path=demo_db,
+    )
+    activate_config_version(cid, demo_db, reason="test", manual=False)
+    insert_probation_candidate(cid, demo_db)
+    started = 1000000
+    db = Database(demo_db)
+    conn = db._get_conn()
+    conn.execute("UPDATE demo_probation SET started_at_ts = ? WHERE config_id = ?", (started, cid))
+    conn.commit()
+    db.upsert_automation_state({"state": "BLOCKED_BY_BURNIN", "updated_ts": int(_time.time() * 1000)})
+    db.close()
+    status, lifecycle, reasons, metrics, failure_type = evaluate_probation(demo_db, config_with_probation, config_id=cid)
+    assert status == PROBATION_STATUS_FAILED
+    assert failure_type == FAILURE_REASON_FAIL_FAST_HARD_BLOCK
+    assert "hard_block" in str(reasons).lower()
+
+
+def test_fail_fast_stalled_poor_metrics(demo_db, config_with_probation):
+    """Probation fails with fail_fast_stalled_poor_metrics when no trades for stall window and PF/expectancy poor."""
+    import time as _time
+    from src.demo_probation.evaluator import FAILURE_REASON_FAIL_FAST_STALLED_POOR_METRICS
+    config_with_probation.demo_probation.no_trade_stall_minutes = 1
+    config_with_probation.demo_probation.fail_if_stalled_and_pf_below = 0.95
+    config_with_probation.demo_probation.fail_if_stalled_and_negative_expectancy = True
+    ensure_stage3_schema(demo_db)
+    cid = register_config_version(
+        config_with_probation,
+        version="test",
+        status="candidate",
+        description="test",
+        source="manual",
+        db_path=demo_db,
+    )
+    activate_config_version(cid, demo_db, reason="test", manual=False)
+    insert_probation_candidate(cid, demo_db)
+    now_ms = int(_time.time() * 1000)
+    started = now_ms - 120000
+    db = Database(demo_db)
+    conn = db._get_conn()
+    conn.execute("UPDATE demo_probation SET started_at_ts = ? WHERE config_id = ?", (started, cid))
+    conn.commit()
+    pnls = [0.5, -0.5, 0.5, -0.5, -0.5]
+    for i in range(5):
+        conn.execute(
+            "INSERT INTO trades (ts, symbol, side, qty, price, order_id, order_link_id, pnl, config_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (started + i * 100, "BTCUSDT", "Buy", 0.01, 100.0, f"o{i}", f"exit_{i}", pnls[i], cid),
+        )
+    conn.commit()
+    db.close()
+    status, lifecycle, reasons, metrics, failure_type = evaluate_probation(demo_db, config_with_probation, config_id=cid)
+    assert status == PROBATION_STATUS_FAILED
+    assert failure_type == FAILURE_REASON_FAIL_FAST_STALLED_POOR_METRICS
+    assert "stalled" in str(reasons).lower()
+
+
+def test_no_false_fail_when_stall_but_acceptable_metrics(demo_db, config_with_probation):
+    """When stalled but PF/expectancy still acceptable, do not fail with fail_fast_stalled_poor_metrics."""
+    config_with_probation.demo_probation.no_trade_stall_minutes = 1
+    config_with_probation.demo_probation.fail_if_stalled_and_pf_below = 0.5
+    config_with_probation.demo_probation.fail_if_stalled_and_negative_expectancy = True
+    config_with_probation.demo_probation.min_closed_trades = 3
+    ensure_stage3_schema(demo_db)
+    cid = register_config_version(
+        config_with_probation,
+        version="test",
+        status="candidate",
+        description="test",
+        source="manual",
+        db_path=demo_db,
+    )
+    activate_config_version(cid, demo_db, reason="test", manual=False)
+    insert_probation_candidate(cid, demo_db)
+    started = 1000000
+    db = Database(demo_db)
+    conn = db._get_conn()
+    conn.execute("UPDATE demo_probation SET started_at_ts = ? WHERE config_id = ?", (started, cid))
+    conn.commit()
+    for i in range(4):
+        pnl = 1.0 if i % 2 == 0 else -0.3
+        conn.execute(
+            "INSERT INTO trades (ts, symbol, side, qty, price, order_id, order_link_id, pnl, config_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (started + i * 100, "BTCUSDT", "Buy", 0.01, 100.0, f"o{i}", f"exit_{i}", pnl, cid),
+        )
+    conn.commit()
+    db.close()
+    import time
+    time.sleep(1.1)
+    status, lifecycle, reasons, metrics, failure_type = evaluate_probation(demo_db, config_with_probation, config_id=cid)
+    assert failure_type != "fail_fast_stalled_poor_metrics"
+
+
+def test_artifact_shows_failure_reason_type(demo_db, config_with_probation, tmp_path):
+    """After fail-fast failure, artifact and record have failure_reason_type."""
+    from src.demo_probation.artifacts import build_probation_status_payload, write_probation_status_artifact
+    ensure_stage3_schema(demo_db)
+    cid = register_config_version(
+        config_with_probation,
+        version="test",
+        status="candidate",
+        description="test",
+        source="manual",
+        db_path=demo_db,
+    )
+    activate_config_version(cid, demo_db, reason="test", manual=False)
+    insert_probation_candidate(cid, demo_db)
+    apply_probation_result(
+        cid, demo_db, config_with_probation,
+        PROBATION_STATUS_FAILED, LIFECYCLE_DEMO_PROBATION_FAILED,
+        ["stalled_poor_metrics"], {"closed_trades": 5, "profit_factor": 0.8, "expectancy": -0.1},
+        failure_reason_type="fail_fast_stalled_poor_metrics",
+    )
+    rec = get_probation_record(cid, demo_db)
+    assert rec.get("failure_reason_type") == "fail_fast_stalled_poor_metrics"
+    payload = build_probation_status_payload(
+        cid, LIFECYCLE_DEMO_PROBATION_FAILED, PROBATION_STATUS_FAILED,
+        {"closed_trades": 5}, ["stalled_poor_metrics"],
+        rec.get("started_at_ts"), rec.get("updated_at_ts"), rec.get("ended_at_ts"), None, False,
+        failure_reason_type="fail_fast_stalled_poor_metrics",
+    )
+    assert payload["failure_reason_type"] == "fail_fast_stalled_poor_metrics"
+    path = write_probation_status_artifact(str(tmp_path), "demo", payload)
+    assert path and path.exists()

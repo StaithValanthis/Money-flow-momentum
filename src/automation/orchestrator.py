@@ -252,13 +252,13 @@ def run_demo_automation_cycle(config_path: Optional[Path] = None) -> dict[str, A
             from src.demo_probation.artifacts import build_probation_status_payload, write_probation_status_artifact
             prob_status = get_current_probation_status(config.database_path)
             if prob_status:
-                p_status, p_lifecycle, p_reasons, p_metrics = evaluate_probation(
+                p_status, p_lifecycle, p_reasons, p_metrics, p_failure_type = evaluate_probation(
                     config.database_path, config, config_id=prob_status.get("config_id")
                 )
                 if p_status == "PASSED":
                     apply_probation_result(
                         prob_status["config_id"], config.database_path, config,
-                        p_status, p_lifecycle, p_reasons, p_metrics,
+                        p_status, p_lifecycle, p_reasons, p_metrics, failure_reason_type=p_failure_type,
                     )
                     instance = getattr(config, "instance_name", None) or "demo"
                     payload = build_probation_status_payload(
@@ -271,16 +271,16 @@ def run_demo_automation_cycle(config_path: Optional[Path] = None) -> dict[str, A
                 elif p_status == "FAILED":
                     apply_probation_result(
                         prob_status["config_id"], config.database_path, config,
-                        p_status, p_lifecycle, p_reasons, p_metrics,
+                        p_status, p_lifecycle, p_reasons, p_metrics, failure_reason_type=p_failure_type,
                     )
                     instance = getattr(config, "instance_name", None) or "demo"
                     payload = build_probation_status_payload(
                         prob_status["config_id"], p_lifecycle, p_status, p_metrics, p_reasons,
                         prob_status.get("started_at_ts"), prob_status.get("updated_at_ts"),
-                        int(time.time() * 1000), None, False,
+                        int(time.time() * 1000), None, False, failure_reason_type=p_failure_type,
                     )
                     write_probation_status_artifact(config.artifacts_root, instance, payload)
-                    log.warning("Demo probation failed: %s", p_reasons)
+                    log.warning("Demo probation failed: %s (reason_type=%s)", p_reasons, p_failure_type or "timer_evaluated")
 
         if gate_breaches > 0:
             snap.last_recommendation_status = RECOMMENDATION_NOT_READY

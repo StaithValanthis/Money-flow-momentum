@@ -459,6 +459,14 @@ class DemoProbationConfig(BaseModel):
     # Startup behavior
     allow_demo_trading_with_probation_candidate: bool = True
 
+    # Fail-fast: reject obviously failed candidates immediately / on next tick (Demo-only)
+    fail_fast_on_kill_switch: bool = True
+    fail_fast_on_hard_block: bool = True
+    no_trade_stall_minutes: int = Field(default=10, ge=1, le=10080)  # 1 week max
+    fail_if_stalled_and_negative_expectancy: bool = True
+    fail_if_stalled_and_pf_below: float = Field(default=0.90, ge=0.0, le=2.0)
+    auto_reinit_after_failure: bool = False
+
 
 class LoggingConfig(BaseModel):
     """Logging settings."""

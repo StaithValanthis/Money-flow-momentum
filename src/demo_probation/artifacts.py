@@ -36,9 +36,10 @@ def build_probation_status_payload(
     ended_at_ts: Optional[int],
     promoted_to_baseline_at_ts: Optional[int],
     is_active_baseline: bool,
+    failure_reason_type: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build the JSON payload for demo_probation_status.json."""
-    return {
+    out = {
         "candidate_config_id": config_id,
         "lifecycle_state": lifecycle_state or "UNKNOWN",
         "probation_status": probation_status,
@@ -50,3 +51,6 @@ def build_probation_status_payload(
         "promoted_to_baseline_at_ts": promoted_to_baseline_at_ts,
         "is_active_demo_baseline": is_active_baseline,
     }
+    if failure_reason_type is not None:
+        out["failure_reason_type"] = failure_reason_type
+    return out

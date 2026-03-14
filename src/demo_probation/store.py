@@ -29,8 +29,8 @@ def insert_probation_candidate(config_id: str, db_path: str) -> bool:
         now = int(time.time() * 1000)
         conn.execute(
             """INSERT OR REPLACE INTO demo_probation
-               (config_id, lifecycle_state, started_at_ts, updated_at_ts, ended_at_ts, failure_reasons, metrics_snapshot, promoted_to_baseline_at_ts)
-               VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL)""",
+               (config_id, lifecycle_state, started_at_ts, updated_at_ts, ended_at_ts, failure_reasons, failure_reason_type, metrics_snapshot, promoted_to_baseline_at_ts)
+               VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL)""",
             (config_id, LIFECYCLE_DEMO_PROBATION, now, now),
         )
         conn.commit()
@@ -63,8 +63,9 @@ def update_probation_state(
     failure_reasons: Optional[list[str]] = None,
     metrics_snapshot: Optional[Dict[str, Any]] = None,
     promoted_to_baseline_at_ts: Optional[int] = None,
+    failure_reason_type: Optional[str] = None,
 ) -> bool:
-    """Update probation row to passed/failed and optional promotion timestamp."""
+    """Update probation row to passed/failed, optional promotion timestamp, and failure_reason_type."""
     try:
         db = _get_db(db_path)
         conn = db._get_conn()
@@ -72,14 +73,25 @@ def update_probation_state(
         reasons_json = json.dumps(failure_reasons) if failure_reasons else None
         metrics_json = json.dumps(metrics_snapshot) if metrics_snapshot else None
         end_ts = now if lifecycle_state in (LIFECYCLE_DEMO_PROBATION_PASSED, LIFECYCLE_DEMO_PROBATION_FAILED) else None
-        conn.execute(
-            """UPDATE demo_probation SET
-               lifecycle_state = ?, updated_at_ts = ?, ended_at_ts = COALESCE(?, ended_at_ts),
-               failure_reasons = COALESCE(?, failure_reasons), metrics_snapshot = COALESCE(?, metrics_snapshot),
-               promoted_to_baseline_at_ts = COALESCE(?, promoted_to_baseline_at_ts)
-               WHERE config_id = ?""",
-            (lifecycle_state, now, end_ts, reasons_json, metrics_json, promoted_to_baseline_at_ts, config_id),
-        )
+        if failure_reason_type is not None:
+            conn.execute(
+                """UPDATE demo_probation SET
+                   lifecycle_state = ?, updated_at_ts = ?, ended_at_ts = COALESCE(?, ended_at_ts),
+                   failure_reasons = COALESCE(?, failure_reasons), failure_reason_type = COALESCE(?, failure_reason_type),
+                   metrics_snapshot = COALESCE(?, metrics_snapshot),
+                   promoted_to_baseline_at_ts = COALESCE(?, promoted_to_baseline_at_ts)
+                   WHERE config_id = ?""",
+                (lifecycle_state, now, end_ts, reasons_json, failure_reason_type, metrics_json, promoted_to_baseline_at_ts, config_id),
+            )
+        else:
+            conn.execute(
+                """UPDATE demo_probation SET
+                   lifecycle_state = ?, updated_at_ts = ?, ended_at_ts = COALESCE(?, ended_at_ts),
+                   failure_reasons = COALESCE(?, failure_reasons), metrics_snapshot = COALESCE(?, metrics_snapshot),
+                   promoted_to_baseline_at_ts = COALESCE(?, promoted_to_baseline_at_ts)
+                   WHERE config_id = ?""",
+                (lifecycle_state, now, end_ts, reasons_json, metrics_json, promoted_to_baseline_at_ts, config_id),
+            )
         conn.commit()
         db.close()
         return True

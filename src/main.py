@@ -211,6 +211,12 @@ class TradingBot:
             exec_id = data.get("execId", "") or data.get("executionId", "")
             self._db.insert_fill(ts, exec_id, order_id, symbol, side, qty, price, realised_pnl, config_id=getattr(self, "_config_id", None))
             self._db.insert_trade(ts, symbol, side, qty, price, order_id=order_id, order_link_id=link, pnl=realised_pnl, config_id=getattr(self, "_config_id", None))
+            try:
+                from src.demo_probation import run_probation_fail_fast_check
+                if run_probation_fail_fast_check(self.config.database_path, self.config):
+                    self.running = False
+            except Exception as e:
+                log.debug("probation fail-fast check: %s", e)
         except Exception as e:
             log.debug("insert_fill/insert_trade: %s", e)
 
@@ -713,6 +719,15 @@ class TradingBot:
                     from src.monitoring.heartbeat import write_heartbeat
                     write_heartbeat(self._health, self._heartbeat_path)
 
+                if get_bybit_env(self.env) == "demo" and getattr(getattr(self.config, "demo_probation", None), "enabled", False):
+                    try:
+                        from src.demo_probation import run_probation_fail_fast_check
+                        if run_probation_fail_fast_check(self.config.database_path, self.config):
+                            self.running = False
+                            break
+                    except Exception as e:
+                        log.debug("probation fail-fast check: %s", e)
+
                 symbols = self._universe.symbols
                 if not symbols:
                     time.sleep(self.config.score_interval_seconds)
@@ -724,12 +739,22 @@ class TradingBot:
                 if not ok:
                     log.error(f"Kill switch: {reason}")
                     self._db.insert_kill_switch(now_ms, reason)
+                    try:
+                        from src.demo_probation import run_probation_fail_fast_check
+                        run_probation_fail_fast_check(self.config.database_path, self.config)
+                    except Exception as e:
+                        log.debug("probation fail-fast check: %s", e)
                     self.running = False
                     break
                 ok, reason = self._risk.check_daily_realized_loss()
                 if not ok:
                     log.error(f"Kill switch: {reason}")
                     self._db.insert_kill_switch(now_ms, reason)
+                    try:
+                        from src.demo_probation import run_probation_fail_fast_check
+                        run_probation_fail_fast_check(self.config.database_path, self.config)
+                    except Exception as e:
+                        log.debug("probation fail-fast check: %s", e)
                     self.running = False
                     break
 

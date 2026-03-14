@@ -177,6 +177,7 @@ CREATE TABLE IF NOT EXISTS demo_probation (
     updated_at_ts INTEGER NOT NULL,
     ended_at_ts INTEGER,
     failure_reasons TEXT,
+    failure_reason_type TEXT,
     metrics_snapshot TEXT,
     promoted_to_baseline_at_ts INTEGER,
     FOREIGN KEY (config_id) REFERENCES config_versions(config_id)
@@ -213,4 +214,5 @@ STAGE3_ALTERS = [
     "ALTER TABLE lifecycle_events ADD COLUMN config_id TEXT;",
     "ALTER TABLE equity_curve ADD COLUMN config_id TEXT;",
     "ALTER TABLE automation_state ADD COLUMN last_demo_adoption_ts INTEGER;",
+    "ALTER TABLE demo_probation ADD COLUMN failure_reason_type TEXT;",
 ]

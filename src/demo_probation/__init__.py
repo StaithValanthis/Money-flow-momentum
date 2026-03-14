@@ -6,6 +6,7 @@ from src.demo_probation.evaluator import (
     PROBATION_STATUS_PASSED,
     apply_probation_result,
     evaluate_probation,
+    run_probation_fail_fast_check,
 )
 from src.demo_probation.store import (
     LIFECYCLE_ACTIVE_DEMO_BASELINE,
@@ -21,6 +22,7 @@ from src.demo_probation.store import (
 __all__ = [
     "evaluate_probation",
     "apply_probation_result",
+    "run_probation_fail_fast_check",
     "insert_probation_candidate",
     "get_probation_record",
     "get_current_probation_status",

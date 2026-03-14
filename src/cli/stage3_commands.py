@@ -1079,6 +1079,7 @@ def register_stage3_cli(app: typer.Typer) -> None:
                     ended_at_ts=rec.get("ended_at_ts"),
                     promoted_to_baseline_at_ts=rec.get("promoted_to_baseline_at_ts"),
                     is_active_baseline=rec.get("lifecycle_state") == "DEMO_PROBATION_PASSED",
+                    failure_reason_type=rec.get("failure_reason_type"),
                 )
             else:
                 payload = build_probation_status_payload(
@@ -1099,7 +1100,7 @@ def register_stage3_cli(app: typer.Typer) -> None:
             if path:
                 typer.echo("artifact: %s" % path)
             raise typer.Exit(0)
-        probation_status_str, lifecycle_state, reasons, metrics = evaluate_probation(db_path, config)
+        probation_status_str, lifecycle_state, reasons, metrics, failure_reason_type = evaluate_probation(db_path, config)
         rec = get_current_probation_status(db_path) or get_probation_record(prob_status.get("config_id"), db_path) or {}
         payload = build_probation_status_payload(
             config_id=rec.get("config_id"),
@@ -1112,11 +1113,14 @@ def register_stage3_cli(app: typer.Typer) -> None:
             ended_at_ts=rec.get("ended_at_ts"),
             promoted_to_baseline_at_ts=rec.get("promoted_to_baseline_at_ts"),
             is_active_baseline=False,
+            failure_reason_type=failure_reason_type or rec.get("failure_reason_type"),
         )
         path = write_probation_status_artifact(config.artifacts_root, instance, payload)
         typer.echo("candidate_config_id: %s" % payload["candidate_config_id"])
         typer.echo("lifecycle_state: %s" % payload["lifecycle_state"])
         typer.echo("probation_status: %s" % payload["probation_status"])
+        if payload.get("failure_reason_type"):
+            typer.echo("failure_reason_type: %s" % payload["failure_reason_type"])
         typer.echo("reasons: %s" % (payload["pass_fail_reasons"] or []))
         typer.echo("metrics: closed_trades=%s runtime_minutes=%s profit_factor=%s expectancy=%s" % (
             metrics.get("closed_trades", 0),
