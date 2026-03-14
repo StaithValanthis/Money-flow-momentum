@@ -63,6 +63,29 @@ def _is_demo_env(config: Config, env: EnvSettings) -> bool:
     return env_t == "demo" and bool(burn and getattr(burn, "burn_in_enabled", False) and phase == "demo")
 
 
+def _get_demo_probation_summary(config: Config) -> Optional[dict]:
+    """Return a short demo probation summary for automation details, or None."""
+    if not getattr(getattr(config, "demo_probation", None), "enabled", False):
+        return None
+    try:
+        from src.demo_probation import get_current_probation_status, get_probation_record
+        from src.config.versioning import get_active_config_id
+        prob = get_current_probation_status(config.database_path)
+        if prob:
+            return {"status": "IN_PROGRESS", "candidate_config_id": prob.get("config_id")}
+        aid = get_active_config_id(config.database_path)
+        rec = get_probation_record(aid, config.database_path) if aid else None
+        if rec:
+            s = rec.get("lifecycle_state", "")
+            if s == "DEMO_PROBATION_PASSED":
+                return {"status": "PASSED", "candidate_config_id": aid}
+            if s == "DEMO_PROBATION_FAILED":
+                return {"status": "FAILED", "candidate_config_id": aid}
+    except Exception:
+        pass
+    return None
+
+
 def _load_snapshot(db: Database) -> AutomationSnapshot:
     row = db.get_automation_state()
     return AutomationSnapshot.from_db(row or None)
@@ -221,6 +244,43 @@ def run_demo_automation_cycle(config_path: Optional[Path] = None) -> dict[str, A
             }
             _write_recommendation_artifacts(config, snap, details)
             return {"snapshot": asdict(snap), "details": details}
+
+        # --- Demo probation: evaluate active candidate from real Demo data ---
+        prob = getattr(config, "demo_probation", None)
+        if prob and getattr(prob, "enabled", False):
+            from src.demo_probation import evaluate_probation, apply_probation_result, get_current_probation_status
+            from src.demo_probation.artifacts import build_probation_status_payload, write_probation_status_artifact
+            prob_status = get_current_probation_status(config.database_path)
+            if prob_status:
+                p_status, p_lifecycle, p_reasons, p_metrics = evaluate_probation(
+                    config.database_path, config, config_id=prob_status.get("config_id")
+                )
+                if p_status == "PASSED":
+                    apply_probation_result(
+                        prob_status["config_id"], config.database_path, config,
+                        p_status, p_lifecycle, p_reasons, p_metrics,
+                    )
+                    instance = getattr(config, "instance_name", None) or "demo"
+                    payload = build_probation_status_payload(
+                        prob_status["config_id"], p_lifecycle, p_status, p_metrics, p_reasons,
+                        prob_status.get("started_at_ts"), prob_status.get("updated_at_ts"),
+                        int(time.time() * 1000), int(time.time() * 1000), True,
+                    )
+                    write_probation_status_artifact(config.artifacts_root, instance, payload)
+                    log.info("Demo probation passed; candidate promoted to active Demo baseline")
+                elif p_status == "FAILED":
+                    apply_probation_result(
+                        prob_status["config_id"], config.database_path, config,
+                        p_status, p_lifecycle, p_reasons, p_metrics,
+                    )
+                    instance = getattr(config, "instance_name", None) or "demo"
+                    payload = build_probation_status_payload(
+                        prob_status["config_id"], p_lifecycle, p_status, p_metrics, p_reasons,
+                        prob_status.get("started_at_ts"), prob_status.get("updated_at_ts"),
+                        int(time.time() * 1000), None, False,
+                    )
+                    write_probation_status_artifact(config.artifacts_root, instance, payload)
+                    log.warning("Demo probation failed: %s", p_reasons)
 
         if gate_breaches > 0:
             snap.last_recommendation_status = RECOMMENDATION_NOT_READY
@@ -469,6 +529,9 @@ def run_demo_automation_cycle(config_path: Optional[Path] = None) -> dict[str, A
         }
         if recommendation_message is not None:
             details["recommendation_message"] = recommendation_message
+        prob_summary = _get_demo_probation_summary(config)
+        if prob_summary:
+            details["demo_probation"] = prob_summary
         _write_recommendation_artifacts(config, snap, details)
         return {"snapshot": asdict(snap), "details": details}
     finally:

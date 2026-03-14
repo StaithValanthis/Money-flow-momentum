@@ -169,6 +169,20 @@ CREATE TABLE IF NOT EXISTS degradation_events (
 );
 CREATE INDEX IF NOT EXISTS idx_degradation_config_ts ON degradation_events(config_id, ts);
 
+-- Demo probation (one row per config that entered probation; lifecycle state)
+CREATE TABLE IF NOT EXISTS demo_probation (
+    config_id TEXT PRIMARY KEY,
+    lifecycle_state TEXT NOT NULL,
+    started_at_ts INTEGER NOT NULL,
+    updated_at_ts INTEGER NOT NULL,
+    ended_at_ts INTEGER,
+    failure_reasons TEXT,
+    metrics_snapshot TEXT,
+    promoted_to_baseline_at_ts INTEGER,
+    FOREIGN KEY (config_id) REFERENCES config_versions(config_id)
+);
+CREATE INDEX IF NOT EXISTS idx_demo_probation_state ON demo_probation(lifecycle_state);
+
 -- Automation / orchestration state (single row, id=1)
 CREATE TABLE IF NOT EXISTS automation_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),

@@ -21,6 +21,7 @@ from src.config.versioning import (
     get_config_version,
     _config_from_artifact_yaml,
 )
+from src.demo_probation.store import insert_probation_candidate
 from src.storage.db import Database
 from src.storage.migrations import run_stage3_migrations
 from src.optimizer.search import run_optimization
@@ -453,6 +454,7 @@ def run_warm_start_calibration(
                             result["fallback_used"] = False
                             result["trade_count_synthetic"] = int((best.get("oos_metrics") or {}).get("trade_count") or 0)
                             log.info("Warm-start final seed activated: config_id=%s", new_id)
+                            _register_probation_candidate_if_enabled(config, new_id, demo_db_path)
                             result["checkpoint_cleared_reason"] = "viable_seed_found"
                             archive_checkpoint(artifact_dir)
                             _write_warm_start_artifact(artifact_dir, result, config)
@@ -579,6 +581,7 @@ def run_warm_start_calibration(
                     result["warm_start_used"] = True
                     result["reason"] = "warm_start_seeded"
                     result["engine"] = "parameter_aware_protection_backtest"
+                    _register_probation_candidate_if_enabled(config, new_id, demo_db_path)
                     result["engine_meta"] = {
                         "candidate_count_evaluated": len(all_results),
                         "best_candidate_config_id": new_id,
@@ -779,6 +782,7 @@ def run_warm_start_calibration(
                 result["best_candidate_config_id"] = new_id
                 result["best_candidate_metrics"] = metrics
                 result["viable_seed_found"] = True
+                _register_probation_candidate_if_enabled(config, new_id, demo_db_path)
                 _write_warm_start_artifact(artifact_dir, result, config)
                 return result
             result["reason"] = "activation_failed"
@@ -839,9 +843,21 @@ def _apply_fallback_seed(
         result["success"] = True
         result["reason"] = "fallback_seed_activated"
         result["viable_seed_found"] = False
+        _register_probation_candidate_if_enabled(config, fallback_id, demo_db_path)
     else:
         result["reason"] = "fallback_activation_failed"
     _write_warm_start_artifact(artifact_dir, result, config)
+
+
+def _register_probation_candidate_if_enabled(config: Config, seed_config_id: str, demo_db_path: str) -> None:
+    """When demo_probation is enabled, record the activated seed as probation candidate (Demo-only)."""
+    prob = getattr(config, "demo_probation", None)
+    if not prob or not getattr(prob, "enabled", False):
+        return
+    if not getattr(prob, "allow_demo_trading_with_probation_candidate", True):
+        return
+    if insert_probation_candidate(seed_config_id, demo_db_path):
+        log.info("Demo probation candidate registered: config_id=%s", seed_config_id)
 
 
 def _write_warm_start_artifact(artifact_dir: Path, result: dict[str, Any], config: Config) -> None:

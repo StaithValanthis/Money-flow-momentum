@@ -433,6 +433,33 @@ class WarmStartConfig(BaseModel):
     )
 
 
+class DemoProbationConfig(BaseModel):
+    """Demo-only probation: historically passable seed must pass real Demo validation before trusted baseline."""
+
+    enabled: bool = True
+
+    # Probation sample size
+    min_closed_trades: int = Field(default=30, ge=1, le=10_000)
+    min_runtime_minutes: int = Field(default=60, ge=1, le=100_000)
+
+    # Failure conditions
+    forbid_kill_switch_hit: bool = True
+    max_consecutive_losses: int = Field(default=5, ge=1, le=50)
+    max_stop_out_rate: float = Field(default=0.50, ge=0.0, le=1.0)
+    max_ultra_short_trade_fraction: float = Field(default=0.25, ge=0.0, le=1.0)
+
+    # Minimum success criteria
+    min_profit_factor: float = Field(default=1.05, ge=0.0, le=20.0)
+    min_expectancy: float = Field(default=0.0)
+
+    # Promotion behavior
+    auto_promote_probation_pass_to_active_demo: bool = True
+    auto_reject_on_failure: bool = True
+
+    # Startup behavior
+    allow_demo_trading_with_probation_candidate: bool = True
+
+
 class LoggingConfig(BaseModel):
     """Logging settings."""
 
@@ -472,6 +499,7 @@ class Config(BaseModel):
     demo_research: DemoResearchConfig = Field(default_factory=DemoResearchConfig)
     research_policy: ResearchPolicyConfig = Field(default_factory=ResearchPolicyConfig)
     warm_start: WarmStartConfig = Field(default_factory=WarmStartConfig)
+    demo_probation: DemoProbationConfig = Field(default_factory=DemoProbationConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     portfolio_exposure: PortfolioExposureConfig = Field(default_factory=PortfolioExposureConfig)
     database_path: str = "data/bot.db"

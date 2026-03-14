@@ -1042,6 +1042,92 @@ def register_stage3_cli(app: typer.Typer) -> None:
         else:
             typer.echo(f"Demo init finished: {result.get('reason', '')}")
         raise typer.Exit(0 if result.get("success") else 1)
+
+    probation_app = typer.Typer(help="Demo probation: candidate validation via real Demo results")
+    @probation_app.command("status")
+    def demo_probation_status_cmd(
+        config_path: Optional[Path] = typer.Option(None, "--config", "-c"),
+    ) -> None:
+        """Show Demo probation status and write artifacts/<instance>/probation/demo_probation_status.json."""
+        import json
+        from src.config.versioning import get_active_config_id
+        from src.demo_probation import (
+            evaluate_probation,
+            get_current_probation_status,
+            get_probation_record,
+            PROBATION_STATUS_IN_PROGRESS,
+            PROBATION_STATUS_PASSED,
+            PROBATION_STATUS_FAILED,
+        )
+        from src.demo_probation.artifacts import build_probation_status_payload, write_probation_status_artifact
+        config, _ = load_config(config_path)
+        db_path = config.database_path
+        instance = getattr(config, "instance_name", None) or "demo"
+        prob_status = get_current_probation_status(db_path)
+        if not prob_status:
+            active_id = get_active_config_id(config.database_path)
+            rec = get_probation_record(active_id, db_path) if active_id else None
+            if rec and rec.get("lifecycle_state") in ("DEMO_PROBATION_PASSED", "DEMO_PROBATION_FAILED"):
+                payload = build_probation_status_payload(
+                    config_id=rec.get("config_id"),
+                    lifecycle_state=rec.get("lifecycle_state"),
+                    probation_status=PROBATION_STATUS_PASSED if rec.get("lifecycle_state") == "DEMO_PROBATION_PASSED" else PROBATION_STATUS_FAILED,
+                    metrics=json.loads(rec["metrics_snapshot"]) if rec.get("metrics_snapshot") else None,
+                    reasons=json.loads(rec["failure_reasons"]) if rec.get("failure_reasons") else None,
+                    started_at_ts=rec.get("started_at_ts"),
+                    updated_at_ts=rec.get("updated_at_ts"),
+                    ended_at_ts=rec.get("ended_at_ts"),
+                    promoted_to_baseline_at_ts=rec.get("promoted_to_baseline_at_ts"),
+                    is_active_baseline=rec.get("lifecycle_state") == "DEMO_PROBATION_PASSED",
+                )
+            else:
+                payload = build_probation_status_payload(
+                    config_id=active_id,
+                    lifecycle_state=None,
+                    probation_status=PROBATION_STATUS_IN_PROGRESS,
+                    metrics=None,
+                    reasons=["no_probation_candidate"],
+                    started_at_ts=None,
+                    updated_at_ts=None,
+                    ended_at_ts=None,
+                    promoted_to_baseline_at_ts=None,
+                    is_active_baseline=False,
+                )
+            path = write_probation_status_artifact(config.artifacts_root, instance, payload)
+            typer.echo("probation_status: no active probation candidate")
+            typer.echo("active_config_id: %s" % (active_id or "none"))
+            if path:
+                typer.echo("artifact: %s" % path)
+            raise typer.Exit(0)
+        probation_status_str, lifecycle_state, reasons, metrics = evaluate_probation(db_path, config)
+        rec = get_current_probation_status(db_path) or get_probation_record(prob_status.get("config_id"), db_path) or {}
+        payload = build_probation_status_payload(
+            config_id=rec.get("config_id"),
+            lifecycle_state=lifecycle_state,
+            probation_status=probation_status_str,
+            metrics=metrics,
+            reasons=reasons,
+            started_at_ts=rec.get("started_at_ts"),
+            updated_at_ts=rec.get("updated_at_ts"),
+            ended_at_ts=rec.get("ended_at_ts"),
+            promoted_to_baseline_at_ts=rec.get("promoted_to_baseline_at_ts"),
+            is_active_baseline=False,
+        )
+        path = write_probation_status_artifact(config.artifacts_root, instance, payload)
+        typer.echo("candidate_config_id: %s" % payload["candidate_config_id"])
+        typer.echo("lifecycle_state: %s" % payload["lifecycle_state"])
+        typer.echo("probation_status: %s" % payload["probation_status"])
+        typer.echo("reasons: %s" % (payload["pass_fail_reasons"] or []))
+        typer.echo("metrics: closed_trades=%s runtime_minutes=%s profit_factor=%s expectancy=%s" % (
+            metrics.get("closed_trades", 0),
+            metrics.get("runtime_minutes", 0),
+            metrics.get("profit_factor", 0),
+            metrics.get("expectancy", 0),
+        ))
+        if path:
+            typer.echo("artifact: %s" % path)
+        raise typer.Exit(0)
+    demo_app.add_typer(probation_app, name="probation")
     app.add_typer(demo_app, name="demo")
 
     # --- Warm-start (Demo-only: historical candle calibration before first trading) ---
