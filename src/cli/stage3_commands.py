@@ -1131,6 +1131,17 @@ def register_stage3_cli(app: typer.Typer) -> None:
         if path:
             typer.echo("artifact: %s" % path)
         raise typer.Exit(0)
+
+    @probation_app.command("auto-reinit-enabled")
+    def demo_probation_auto_reinit_enabled_cmd(
+        config_path: Optional[Path] = typer.Option(None, "--config", "-c"),
+    ) -> None:
+        """Exit 0 if demo_probation.auto_reinit_after_failure is true, else 1. For use by start_demo_research.sh."""
+        config, _ = load_config(config_path)
+        prob = getattr(config, "demo_probation", None)
+        enabled = getattr(prob, "auto_reinit_after_failure", False)
+        raise typer.Exit(0 if enabled else 1)
+
     demo_app.add_typer(probation_app, name="probation")
     app.add_typer(demo_app, name="demo")
 

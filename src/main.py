@@ -1,6 +1,7 @@
 """Main bot: boot, run loop, health checks, graceful shutdown."""
 
 import signal
+import sys
 import threading
 import time
 from pathlib import Path
@@ -39,6 +40,9 @@ from src.cli.stage3_commands import register_stage3_cli
 
 log = get_logger(__name__)
 
+# Exit code when Demo probation failed and auto_reinit_after_failure is True (wrapper may re-run demo init)
+EXIT_PROBATION_REINIT = 20
+
 app = typer.Typer()
 register_stage3_cli(app)
 
@@ -72,6 +76,7 @@ class TradingBot:
         self._heartbeat_path: Optional[Path] = None
         self._last_heartbeat_write_ts: float = 0.0
         self._effective_api_key: str = ""  # set in _init_components; never log
+        self._reinit_requested: bool = False  # set when probation failed + auto_reinit_after_failure (Demo-only)
 
     def _init_components(self) -> None:
         env_type = get_bybit_env(self.env)
@@ -225,7 +230,12 @@ class TradingBot:
         prob = getattr(self.config, "demo_probation", None)
         stop = getattr(prob, "stop_demo_on_failure", True)
         if stop:
-            log.warning("Demo probation failed; stopping Demo runtime")
+            reinit = getattr(prob, "auto_reinit_after_failure", False)
+            if reinit:
+                log.warning("Demo probation failed; stopping Demo runtime (re-init requested)")
+                self._reinit_requested = True
+            else:
+                log.warning("Demo probation failed; stopping Demo runtime")
             self.running = False
             return True
         log.info("Demo probation failed (stop_demo_on_failure=false); continuing")
@@ -1145,10 +1155,12 @@ class TradingBot:
                 self._health.report_ok("lifecycle")
             time.sleep(5)
 
-    def run(self) -> None:
+    def run(self) -> Optional[int]:
+        """Run the trading loop. Returns exit code 20 when Demo probation failed and auto_reinit_after_failure is True, else None (caller should exit 0)."""
         self.running = True
+        self._reinit_requested = False
         if not self._boot():
-            return
+            return None
         t_context = threading.Thread(target=self._run_context_refresh, daemon=True)
         t_context.start()
         t_recon = threading.Thread(target=self._run_rest_reconciliation, daemon=True)
@@ -1166,6 +1178,7 @@ class TradingBot:
             self._db.insert_equity(int(time.time() * 1000), self._equity_usdt, 0, config_id=self._config_id)
             self._db.close()
             log.info("Shutdown complete")
+        return EXIT_PROBATION_REINIT if getattr(self, "_reinit_requested", False) else None
 
 
 @app.command()
@@ -1197,7 +1210,9 @@ def run(
 
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
-    bot.run()
+    exit_code = bot.run()
+    if exit_code is not None:
+        sys.exit(exit_code)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 """Tests for Demo probation: historically passable seed -> probation -> validated baseline (Demo-only)."""
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -487,6 +488,120 @@ def test_probation_failure_log_message_when_stopping(config_with_probation):
     call_args = mock_warn.call_args[0][0]
     assert "Demo probation failed" in call_args
     assert "stopping Demo runtime" in call_args
+
+
+def test_auto_reinit_true_sets_reinit_requested(config_with_probation):
+    """When auto_reinit_after_failure=True, _stop_on_probation_failure sets _reinit_requested."""
+    config_with_probation.demo_probation.stop_demo_on_failure = True
+    config_with_probation.demo_probation.auto_reinit_after_failure = True
+    from src.main import TradingBot
+    from src.config.config import EnvSettings
+    env = EnvSettings()
+    env.bybit_env = "demo"
+    bot = TradingBot(config_with_probation, env)
+    bot.running = True
+    bot._stop_on_probation_failure()
+    assert getattr(bot, "_reinit_requested", False) is True
+
+
+def test_auto_reinit_false_does_not_set_reinit_requested(config_with_probation):
+    """When auto_reinit_after_failure=False, _stop_on_probation_failure does not set _reinit_requested."""
+    config_with_probation.demo_probation.stop_demo_on_failure = True
+    config_with_probation.demo_probation.auto_reinit_after_failure = False
+    from src.main import TradingBot
+    from src.config.config import EnvSettings
+    env = EnvSettings()
+    env.bybit_env = "demo"
+    bot = TradingBot(config_with_probation, env)
+    bot._reinit_requested = False
+    bot._stop_on_probation_failure()
+    assert getattr(bot, "_reinit_requested", False) is False
+
+
+def test_run_returns_20_when_reinit_requested(config_with_probation):
+    """run() returns EXIT_PROBATION_REINIT when _reinit_requested is True after loop exits (auto-reinit flow)."""
+    from unittest.mock import Mock, patch
+    from src.main import EXIT_PROBATION_REINIT
+    config_with_probation.demo_probation.stop_demo_on_failure = True
+    config_with_probation.demo_probation.auto_reinit_after_failure = True
+    from src.main import TradingBot
+    from src.config.config import EnvSettings
+    env = EnvSettings()
+    env.bybit_env = "demo"
+    bot = TradingBot(config_with_probation, env)
+    bot._client = Mock()
+    bot._client.stop_private_ws = Mock()
+    bot._client.stop_public_ws = Mock()
+    bot._db = Mock()
+    bot._db.insert_equity = Mock()
+    bot._db.close = Mock()
+    bot._ws_shards = None
+    with patch.object(bot, "_boot", return_value=True), patch.object(
+        bot, "_score_and_enter_loop", side_effect=lambda: setattr(bot, "_reinit_requested", True)
+    ):
+        rc = bot.run()
+    assert rc == EXIT_PROBATION_REINIT
+
+
+def test_run_returns_none_when_no_reinit_requested(config_with_probation):
+    """run() returns None when _reinit_requested is False (normal exit)."""
+    from unittest.mock import Mock, patch
+    from src.main import TradingBot
+    from src.config.config import EnvSettings
+    env = EnvSettings()
+    env.bybit_env = "demo"
+    bot = TradingBot(config_with_probation, env)
+    bot._client = Mock()
+    bot._client.stop_private_ws = Mock()
+    bot._client.stop_public_ws = Mock()
+    bot._db = Mock()
+    bot._db.insert_equity = Mock()
+    bot._db.close = Mock()
+    bot._ws_shards = None
+    with patch.object(bot, "_boot", return_value=True), patch.object(bot, "_score_and_enter_loop"):
+        rc = bot.run()
+    assert rc is None
+
+
+def test_demo_probation_auto_reinit_enabled_cli(tmp_path):
+    """CLI demo probation auto-reinit-enabled exits 0 when true, 1 when false."""
+    import subprocess
+    from pathlib import Path
+    repo = Path(__file__).resolve().parents[1]
+    cfg_path = tmp_path / "config.yaml"
+    import yaml
+    with open(cfg_path, "w") as f:
+        yaml.safe_dump({"demo_probation": {"enabled": True, "auto_reinit_after_failure": True}}, f)
+    r = subprocess.run(
+        [sys.executable, "run_bot.py", "demo", "probation", "auto-reinit-enabled", "--config", str(cfg_path)],
+        cwd=str(repo),
+        capture_output=True,
+        timeout=10,
+    )
+    assert r.returncode == 0
+    with open(cfg_path, "w") as f:
+        yaml.safe_dump({"demo_probation": {"enabled": True, "auto_reinit_after_failure": False}}, f)
+    r2 = subprocess.run(
+        [sys.executable, "run_bot.py", "demo", "probation", "auto-reinit-enabled", "--config", str(cfg_path)],
+        cwd=str(repo),
+        capture_output=True,
+        timeout=10,
+    )
+    assert r2.returncode == 1
+
+
+def test_start_demo_script_has_reinit_loop_and_exit_code():
+    """start_demo_research.sh documents exit code 20 and contains re-init loop logic."""
+    from pathlib import Path
+    repo = Path(__file__).resolve().parents[1]
+    script = repo / "scripts" / "start_demo_research.sh"
+    if not script.exists():
+        return
+    text = script.read_text()
+    assert "EXIT_PROBATION_REINIT=20" in text or "20" in text
+    assert "auto_reinit_after_failure" in text or "auto-reinit-enabled" in text
+    assert "re-initializing" in text or "re-initializing" in text.lower()
+    assert "Demo runtime exited due to probation failure" in text
 
 
 def test_run_probation_fail_fast_check_writes_artifact_before_returning_true(demo_db, config_with_probation, tmp_path):
