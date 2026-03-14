@@ -211,7 +211,7 @@ def run_warm_start_calibration(
         result["skipped"] = True
         return result
 
-    log.info("Warm-start started (Demo-only)")
+    log.info("Demo initialization started")
     artifact_dir = artifact_dir or Path(config.artifacts_root)
     to_ts_ms = int(time.time() * 1000)
     lookback_days = int(getattr(warm, "lookback_days", 30))
@@ -316,7 +316,7 @@ def run_warm_start_calibration(
             result["best_candidate_metrics"] = cp.get("best_candidate_metrics_so_far")
             result["best_candidate_params_so_far"] = cp.get("best_candidate_params_so_far")
             result["best_rejection_reason_seen"] = best_rejection_reason_seen
-            log.info("Warm-start resuming from checkpoint: batch %d/%d, total_candidates_evaluated=%s", start_batch_index + 1, max_batches, total_replayed)
+            log.info("Resuming initialization from checkpoint")
         elif cp:
             result["run_mode"] = "restarted_config_changed"
             result["resumed_from_checkpoint"] = False
@@ -326,6 +326,7 @@ def run_warm_start_calibration(
             result["run_mode"] = "fresh"
             result["resumed_from_checkpoint"] = False
 
+        log.info("Searching for passable startup config")
         for batch_num in range(start_batch_index, max_batches):
             elapsed = time.time() - calibration_start
             if elapsed >= max_total_runtime_seconds:
@@ -418,7 +419,7 @@ def run_warm_start_calibration(
                     if accepted:
                         result["viable_seed_found"] = True
                         result["engine"] = "parameter_aware_protection_backtest"
-                        log.info("Warm-start viable seed found in batch %d; activating", batch_num + 1)
+                        log.info("Passable config found; activating Demo seed")
                         run_stage3_migrations(demo_db_path)
                         demo_artifact_dir = Path(artifact_dir) / "configs"
                         demo_artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -470,7 +471,10 @@ def run_warm_start_calibration(
         result["engine"] = "parameter_aware_protection_backtest"
         result["checkpoint_cleared_reason"] = "search_exhausted"
         archive_checkpoint(artifact_dir)
-        log.info("Warm-start search exhausted after %d batches; no viable seed", result["batches_completed"])
+        if require_viable_seed_before_trading and not allow_fallback_if_no_viable_seed:
+            log.info("No passable config found yet; Demo trading will not start")
+        else:
+            log.info("Warm-start search exhausted after %d batches; no viable seed", result["batches_completed"])
         if allow_fallback_if_no_viable_seed:
             log.info("Warm-start fallback: search exhausted without viable seed; activating conservative seed")
             _apply_fallback_seed(demo_db_path, config, artifact_dir, result)
@@ -795,6 +799,18 @@ def run_warm_start_calibration(
         log.info("Warm-start fallback: no acceptable candidate; activating conservative seed (reason=%s)", result.get("reason"))
         _apply_fallback_seed(demo_db_path, config, artifact_dir, result)
     return result
+def run_demo_init(
+    demo_db_path: str,
+    config_path: Optional[Path] = None,
+    artifact_dir: Optional[Path] = None,
+) -> dict[str, Any]:
+    """
+    Single Demo initialization workflow: resume from checkpoint if present, search until a passable
+    config is found or budget exhausted, activate that config as Demo active seed. No Demo trading
+    until this succeeds (when require_viable_seed_before_trading=True, exit non-zero if no viable seed).
+    Same underlying logic as run_warm_start_calibration; this is the operator-facing entry point.
+    """
+    return run_warm_start_calibration(demo_db_path, config_path, artifact_dir)
 
 
 def _apply_fallback_seed(

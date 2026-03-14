@@ -7,7 +7,7 @@ import pytest
 from src.config.config import Config, EnvSettings, WarmStartConfig
 from src.storage.db import Database
 from src.storage.migrations import run_stage3_migrations
-from src.warm_start import is_warm_start_needed, get_warm_start_status, run_warm_start_calibration
+from src.warm_start import is_warm_start_needed, get_warm_start_status, run_warm_start_calibration, run_demo_init
 
 
 def test_warm_start_uses_strategy_replay_engine_primary(tmp_path: Path, monkeypatch) -> None:
@@ -1120,6 +1120,163 @@ def test_checkpoint_cleared_on_success_or_exhaustion(tmp_path: Path, monkeypatch
         assert not checkpoint_file.exists()
         archives = list(warm_start_dir.glob("warm_start_checkpoint_archive_*.json"))
         assert len(archives) >= 1
+
+
+# --- Demo init: single operator-facing initialization workflow ---
+
+
+def test_demo_init_starts_fresh_when_no_checkpoint(tmp_path: Path, monkeypatch) -> None:
+    """Demo init runs with run_mode=fresh when no checkpoint exists."""
+    db_path = tmp_path / "demo.db"
+    Database(str(db_path)).close()
+    run_stage3_migrations(str(db_path))
+    cfg = Config()
+    cfg.database_path = str(db_path)
+    cfg.operating_mode = "demo_research"
+    cfg.artifacts_root = str(tmp_path / "artifacts")
+    cfg.warm_start = WarmStartConfig(
+        enabled=True,
+        candle_source="local",
+        search_until_viable=True,
+        batch_n_samples=2,
+        max_batches=2,
+        fallback_to_safe_seed_on_failure=True,
+    )
+    env = EnvSettings()
+    candles = [{"start_ts": 1000 + i * 60000, "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5} for i in range(20)]
+    monkeypatch.setattr("src.warm_start.runner.load_config", lambda _path=None: (cfg, env))
+    monkeypatch.setattr("src.warm_start.runner.resolve_bybit_credentials", lambda *a, **k: ("k", "s", False, "demo"), raising=False)
+    monkeypatch.setattr("src.warm_start.runner.BybitClient", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr("src.warm_start.runner.load_cached_candles", lambda a, s: {"BTCUSDT": candles})
+    monkeypatch.setattr("src.warm_start.runner.run_warm_start_candidate_search", lambda *a, **k: (None, [], {"candidates_replayed": 0, "candidate_count_requested": 2, "candidates_invalid": 0, "timeout_hit": False, "elapsed_seconds": 1.0}))
+    monkeypatch.setattr("src.warm_start.runner.passes_warm_start_seed_acceptance", lambda *a, **k: (False, "rejected", {}), raising=False)
+    result = run_demo_init(demo_db_path=str(db_path), config_path=None, artifact_dir=tmp_path / "artifacts")
+    assert result.get("run_mode") == "fresh"
+    assert result.get("resumed_from_checkpoint") is False
+
+
+def test_demo_init_resumes_when_checkpoint_exists(tmp_path: Path, monkeypatch) -> None:
+    """Demo init runs with run_mode=resumed when checkpoint exists and config matches."""
+    from src.warm_start.checkpoint import save_checkpoint, get_warm_start_fingerprint
+    db_path = tmp_path / "demo.db"
+    Database(str(db_path)).close()
+    run_stage3_migrations(str(db_path))
+    cfg = Config()
+    cfg.database_path = str(db_path)
+    cfg.operating_mode = "demo_research"
+    cfg.artifacts_root = str(tmp_path / "artifacts")
+    cfg.warm_start = WarmStartConfig(
+        enabled=True,
+        candle_source="local",
+        search_until_viable=True,
+        batch_n_samples=2,
+        max_batches=3,
+        fallback_to_safe_seed_on_failure=True,
+    )
+    env = EnvSettings()
+    candles = [{"start_ts": 1000 + i * 60000, "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5} for i in range(20)]
+    symbols_sorted = ["BTCUSDT"]
+    lookback = int(getattr(cfg.warm_start, "lookback_days", 7))
+    fp = get_warm_start_fingerprint(cfg, symbols_sorted, "5", lookback)
+    payload = {
+        "search_until_viable": True,
+        "batches_completed": 1,
+        "max_batches": 3,
+        "max_total_runtime_seconds": 600,
+        "elapsed_seconds": 5.0,
+        "total_candidates_requested": 2,
+        "total_candidates_evaluated": 2,
+        "total_candidates_replayed": 2,
+        "total_candidates_invalid": 0,
+        "best_rejection_reason_seen": None,
+        "viable_seed_found": False,
+        "last_completed_batch_index": 0,
+        "warm_start_settings_fingerprint": fp,
+        "config_fingerprint": fp,
+        "engine": "parameter_aware_protection_backtest",
+    }
+    save_checkpoint(tmp_path / "artifacts", payload)
+    monkeypatch.setattr("src.warm_start.runner.load_config", lambda _path=None: (cfg, env))
+    monkeypatch.setattr("src.warm_start.runner.resolve_bybit_credentials", lambda *a, **k: ("k", "s", False, "demo"), raising=False)
+    monkeypatch.setattr("src.warm_start.runner.BybitClient", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr("src.warm_start.runner.load_cached_candles", lambda a, s: {"BTCUSDT": candles})
+    monkeypatch.setattr("src.warm_start.runner.run_warm_start_candidate_search", lambda *a, **k: (None, [], {"candidates_replayed": 2, "candidate_count_requested": 2, "candidates_invalid": 0, "timeout_hit": False, "elapsed_seconds": 1.0}))
+    monkeypatch.setattr("src.warm_start.runner.passes_warm_start_seed_acceptance", lambda *a, **k: (False, "rejected", {}), raising=False)
+    result = run_demo_init(demo_db_path=str(db_path), config_path=None, artifact_dir=tmp_path / "artifacts")
+    assert result.get("run_mode") == "resumed"
+    assert result.get("resumed_from_checkpoint") is True
+
+
+def test_demo_init_exits_success_when_viable_config_found(tmp_path: Path, monkeypatch) -> None:
+    """Demo init returns success and viable_seed_found when a passable config is activated."""
+    db_path = tmp_path / "demo.db"
+    Database(str(db_path)).close()
+    run_stage3_migrations(str(db_path))
+    cfg = Config()
+    cfg.database_path = str(db_path)
+    cfg.operating_mode = "demo_research"
+    cfg.artifacts_root = str(tmp_path / "artifacts")
+    cfg.warm_start = WarmStartConfig(enabled=True, candle_source="local", fallback_to_safe_seed_on_failure=True)
+    env = EnvSettings()
+    candles = [{"start_ts": 1000 + i * 60000, "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5} for i in range(40)]
+    monkeypatch.setattr("src.warm_start.runner.load_config", lambda _path=None: (cfg, env))
+    monkeypatch.setattr("src.warm_start.runner.resolve_bybit_credentials", lambda *a, **k: ("k", "s", False, "demo"), raising=False)
+    monkeypatch.setattr("src.warm_start.runner.BybitClient", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr("src.warm_start.runner.load_cached_candles", lambda a, s: {"BTCUSDT": candles})
+    monkeypatch.setattr("src.warm_start.runner.run_warm_start_candidate_search", lambda *a, **kwargs: (
+        {"params": {"entry.long_threshold": 1.5}, "oos_metrics": {"trade_count": 30, "total_pnl": 100.0}},
+        [],
+        {"candidates_replayed": 5, "candidate_count_requested": 5, "candidates_invalid": 0, "timeout_hit": False, "elapsed_seconds": 1.0},
+    ))
+    monkeypatch.setattr("src.warm_start.runner.passes_warm_start_seed_acceptance", lambda *a, **k: (True, "", {}), raising=False)
+    result = run_demo_init(demo_db_path=str(db_path), config_path=None, artifact_dir=tmp_path / "artifacts")
+    assert result.get("success") is True
+    assert result.get("viable_seed_found") is True
+
+
+def test_demo_init_exits_failure_when_no_viable_and_gated(tmp_path: Path, monkeypatch) -> None:
+    """Demo init returns not success and viable_seed_found False when no passable config and require_viable_seed_before_trading."""
+    db_path = tmp_path / "demo.db"
+    Database(str(db_path)).close()
+    run_stage3_migrations(str(db_path))
+    cfg = Config()
+    cfg.database_path = str(db_path)
+    cfg.operating_mode = "demo_research"
+    cfg.artifacts_root = str(tmp_path / "artifacts")
+    cfg.warm_start = WarmStartConfig(
+        enabled=True,
+        candle_source="local",
+        search_until_viable=True,
+        batch_n_samples=2,
+        max_batches=2,
+        require_viable_seed_before_trading=True,
+        allow_fallback_if_no_viable_seed=False,
+        fallback_to_safe_seed_on_failure=False,
+    )
+    env = EnvSettings()
+    candles = [{"start_ts": 1000 + i * 60000, "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5} for i in range(20)]
+    monkeypatch.setattr("src.warm_start.runner.load_config", lambda _path=None: (cfg, env))
+    monkeypatch.setattr("src.warm_start.runner.resolve_bybit_credentials", lambda *a, **k: ("k", "s", False, "demo"), raising=False)
+    monkeypatch.setattr("src.warm_start.runner.BybitClient", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr("src.warm_start.runner.load_cached_candles", lambda a, s: {"BTCUSDT": candles})
+    monkeypatch.setattr("src.warm_start.runner.run_warm_start_candidate_search", lambda *a, **k: (None, [], {"candidates_replayed": 0, "candidate_count_requested": 2, "candidates_invalid": 0, "timeout_hit": False, "elapsed_seconds": 1.0}))
+    monkeypatch.setattr("src.warm_start.runner.passes_warm_start_seed_acceptance", lambda *a, **k: (False, "rejected", {}), raising=False)
+    result = run_demo_init(demo_db_path=str(db_path), config_path=None, artifact_dir=tmp_path / "artifacts")
+    assert result.get("viable_seed_found") is False
+    assert result.get("require_viable_seed_before_trading") is True
+    assert result.get("success") is False
+
+
+def test_start_demo_research_script_uses_demo_init_and_exits_on_failure() -> None:
+    """start_demo_research.sh runs demo init and exits 1 when init fails (no passable config)."""
+    script_path = Path(__file__).resolve().parent.parent / "scripts" / "start_demo_research.sh"
+    if not script_path.exists():
+        pytest.skip("start_demo_research.sh not found")
+    text = script_path.read_text()
+    assert "demo init" in text, "Script should call demo init"
+    assert "Demo initialization" in text, "Script should mention Demo initialization"
+    assert "exit 1" in text, "Script should exit 1 on init failure"
+    assert "trading will not start" in text.lower() or "will not start" in text.lower(), "Script should state trading will not start on failure"
 
 
 def test_warm_start_fallback_when_no_viable_candidate(tmp_path: Path, monkeypatch) -> None:

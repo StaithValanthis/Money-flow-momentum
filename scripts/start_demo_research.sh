@@ -22,11 +22,10 @@ if [ ! -f "$CONFIG" ]; then
     exit 1
 fi
 python run_bot.py validate --config "$CONFIG" || exit 1
-# Warm-start: if fresh/insufficient Demo data, calibrate from historical candles and seed Demo before first trading (Demo-only).
-# If warm-start exits non-zero (e.g. require_viable_seed_before_trading and no viable seed), do not start trading.
-echo "=== Warm-start check (Demo-only) ==="
-if ! python run_bot.py warm-start run --config "$CONFIG"; then
-    echo "Warm-start failed or did not find a viable seed. Demo trading will not start."
+# Demo initialization: resume checkpoint if present, search until passable config, activate seed. Do not start trading if init fails.
+echo "=== Demo initialization ==="
+if ! python run_bot.py demo init --config "$CONFIG"; then
+    echo "Demo initialization did not find a passable config. Demo trading will not start."
     exit 1
 fi
 if [ "$FOREGROUND" = "1" ]; then

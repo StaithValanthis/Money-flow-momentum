@@ -1009,6 +1009,41 @@ def register_stage3_cli(app: typer.Typer) -> None:
 
     app.add_typer(burnin_app, name="burnin")
 
+    # --- Demo init: single operator-facing initialization workflow (warmup = init) ---
+    demo_app = typer.Typer(help="Demo instance: initialization and status")
+    @demo_app.command("init")
+    def demo_init_cmd(
+        config_path: Optional[Path] = typer.Option(None, "--config", "-c"),
+    ) -> None:
+        """Run Demo initialization: resume if checkpoint exists, search until passable config, activate seed. Exit non-zero if no viable config and trading is gated."""
+        from src.warm_start import run_demo_init
+        config, _ = load_config(config_path)
+        typer.echo("Demo initialization started")
+        result = run_demo_init(
+            demo_db_path=config.database_path,
+            config_path=config_path,
+            artifact_dir=Path(config.artifacts_root),
+        )
+        if result.get("skipped"):
+            typer.echo(f"Demo init skipped: {result.get('reason')}")
+            raise typer.Exit(0)
+        if result.get("error"):
+            typer.echo(f"Demo init error: {result.get('error')}")
+        if result.get("resumed_from_checkpoint"):
+            typer.echo("Resuming initialization from checkpoint")
+        if result.get("viable_seed_found") and result.get("success"):
+            typer.echo("Passable config found; activating Demo seed")
+        require_viable = bool(getattr(config.warm_start, "require_viable_seed_before_trading", False))
+        if require_viable and not result.get("viable_seed_found"):
+            typer.echo("No passable config found yet; Demo trading will not start")
+            raise typer.Exit(1)
+        if result.get("success"):
+            typer.echo("Demo initialization complete")
+        else:
+            typer.echo(f"Demo init finished: {result.get('reason', '')}")
+        raise typer.Exit(0 if result.get("success") else 1)
+    app.add_typer(demo_app, name="demo")
+
     # --- Warm-start (Demo-only: historical candle calibration before first trading) ---
     warm_start_app = typer.Typer(help="Demo warm-start: calibrate from historical candles before first trading")
     @warm_start_app.command("run")
