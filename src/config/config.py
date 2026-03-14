@@ -459,6 +459,9 @@ class DemoProbationConfig(BaseModel):
     # Startup behavior
     allow_demo_trading_with_probation_candidate: bool = True
 
+    # Failure action: stop Demo runtime on probation failure (Demo-only)
+    stop_demo_on_failure: bool = True
+
     # Fail-fast: reject obviously failed candidates immediately / on next tick (Demo-only)
     fail_fast_on_kill_switch: bool = True
     fail_fast_on_hard_block: bool = True

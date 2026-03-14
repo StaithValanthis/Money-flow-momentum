@@ -214,11 +214,22 @@ class TradingBot:
             try:
                 from src.demo_probation import run_probation_fail_fast_check
                 if run_probation_fail_fast_check(self.config.database_path, self.config):
-                    self.running = False
+                    self._stop_on_probation_failure()
             except Exception as e:
                 log.debug("probation fail-fast check: %s", e)
         except Exception as e:
             log.debug("insert_fill/insert_trade: %s", e)
+
+    def _stop_on_probation_failure(self) -> bool:
+        """If stop_demo_on_failure is True, log and set self.running = False. Demo-only. Returns True if stopped."""
+        prob = getattr(self.config, "demo_probation", None)
+        stop = getattr(prob, "stop_demo_on_failure", True)
+        if stop:
+            log.warning("Demo probation failed; stopping Demo runtime")
+            self.running = False
+            return True
+        log.info("Demo probation failed (stop_demo_on_failure=false); continuing")
+        return False
 
     def _fetch_equity(self) -> float:
         try:
@@ -723,8 +734,8 @@ class TradingBot:
                     try:
                         from src.demo_probation import run_probation_fail_fast_check
                         if run_probation_fail_fast_check(self.config.database_path, self.config):
-                            self.running = False
-                            break
+                            if self._stop_on_probation_failure():
+                                break
                     except Exception as e:
                         log.debug("probation fail-fast check: %s", e)
 
@@ -744,7 +755,7 @@ class TradingBot:
                         run_probation_fail_fast_check(self.config.database_path, self.config)
                     except Exception as e:
                         log.debug("probation fail-fast check: %s", e)
-                    self.running = False
+                    self._stop_on_probation_failure()
                     break
                 ok, reason = self._risk.check_daily_realized_loss()
                 if not ok:
@@ -755,7 +766,7 @@ class TradingBot:
                         run_probation_fail_fast_check(self.config.database_path, self.config)
                     except Exception as e:
                         log.debug("probation fail-fast check: %s", e)
-                    self.running = False
+                    self._stop_on_probation_failure()
                     break
 
                 features_list = []

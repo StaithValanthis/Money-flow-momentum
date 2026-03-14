@@ -441,3 +441,81 @@ def test_artifact_shows_failure_reason_type(demo_db, config_with_probation, tmp_
     assert payload["failure_reason_type"] == "fail_fast_stalled_poor_metrics"
     path = write_probation_status_artifact(str(tmp_path), "demo", payload)
     assert path and path.exists()
+
+
+def test_stop_demo_on_failure_true_stops_runtime(config_with_probation):
+    """When stop_demo_on_failure=True, _stop_on_probation_failure sets running=False and returns True."""
+    config_with_probation.demo_probation.stop_demo_on_failure = True
+    from src.main import TradingBot
+    from src.config.config import EnvSettings
+    env = EnvSettings()
+    env.bybit_env = "demo"
+    bot = TradingBot(config_with_probation, env)
+    bot.running = True
+    stopped = bot._stop_on_probation_failure()
+    assert stopped is True
+    assert bot.running is False
+
+
+def test_stop_demo_on_failure_false_does_not_stop_runtime(config_with_probation):
+    """When stop_demo_on_failure=False, _stop_on_probation_failure does not set running=False and returns False."""
+    config_with_probation.demo_probation.stop_demo_on_failure = False
+    from src.main import TradingBot
+    from src.config.config import EnvSettings
+    env = EnvSettings()
+    env.bybit_env = "demo"
+    bot = TradingBot(config_with_probation, env)
+    bot.running = True
+    stopped = bot._stop_on_probation_failure()
+    assert stopped is False
+    assert bot.running is True
+
+
+def test_probation_failure_log_message_when_stopping(config_with_probation):
+    """When stop_demo_on_failure=True, stopping logs the operator-facing message."""
+    from unittest.mock import patch
+    config_with_probation.demo_probation.stop_demo_on_failure = True
+    from src.main import TradingBot
+    from src.config.config import EnvSettings
+    env = EnvSettings()
+    env.bybit_env = "demo"
+    bot = TradingBot(config_with_probation, env)
+    bot.running = True
+    with patch("src.main.log.warning") as mock_warn:
+        bot._stop_on_probation_failure()
+    mock_warn.assert_called_once()
+    call_args = mock_warn.call_args[0][0]
+    assert "Demo probation failed" in call_args
+    assert "stopping Demo runtime" in call_args
+
+
+def test_run_probation_fail_fast_check_writes_artifact_before_returning_true(demo_db, config_with_probation, tmp_path):
+    """When probation fails, run_probation_fail_fast_check writes artifact and state before returning True."""
+    config_with_probation.artifacts_root = str(tmp_path)
+    config_with_probation.instance_name = "demo"
+    ensure_stage3_schema(demo_db)
+    cid = register_config_version(
+        config_with_probation,
+        version="test",
+        status="candidate",
+        description="test",
+        source="manual",
+        db_path=demo_db,
+    )
+    activate_config_version(cid, demo_db, reason="test", manual=False)
+    insert_probation_candidate(cid, demo_db)
+    db = Database(demo_db)
+    conn = db._get_conn()
+    conn.execute("UPDATE demo_probation SET started_at_ts = ? WHERE config_id = ?", (1000000, cid))
+    conn.commit()
+    conn.execute("INSERT INTO kill_switch_events (ts, reason) VALUES (?, ?)", (1001000, "test"))
+    conn.commit()
+    db.close()
+    from src.demo_probation import run_probation_fail_fast_check
+    result = run_probation_fail_fast_check(demo_db, config_with_probation)
+    assert result is True
+    rec = get_probation_record(cid, demo_db)
+    assert rec["lifecycle_state"] == LIFECYCLE_DEMO_PROBATION_FAILED
+    assert rec.get("failure_reason_type") == "fail_fast_kill_switch"
+    artifact_path = tmp_path / "demo" / "probation" / "demo_probation_status.json"
+    assert artifact_path.exists()
