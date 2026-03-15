@@ -22,6 +22,7 @@ from src.config.versioning import (
     _config_from_artifact_yaml,
 )
 from src.demo_probation.store import insert_probation_candidate
+from src.lifecycle.logger import append_demo_lifecycle_event
 from src.storage.db import Database
 from src.storage.migrations import run_stage3_migrations
 from src.optimizer.search import run_optimization
@@ -214,6 +215,10 @@ def run_warm_start_calibration(
 
     log.info("Demo initialization started")
     artifact_dir = artifact_dir or Path(config.artifacts_root)
+    append_demo_lifecycle_event(
+        config.artifacts_root, getattr(config, "instance_name", None),
+        "DEMO_INIT", "started",
+    )
     to_ts_ms = int(time.time() * 1000)
     lookback_days = int(getattr(warm, "lookback_days", 30))
     from_ts_ms = to_ts_ms - lookback_days * 86400 * 1000
@@ -318,6 +323,10 @@ def run_warm_start_calibration(
             result["best_candidate_params_so_far"] = cp.get("best_candidate_params_so_far")
             result["best_rejection_reason_seen"] = best_rejection_reason_seen
             log.info("Resuming initialization from checkpoint")
+            append_demo_lifecycle_event(
+                config.artifacts_root, getattr(config, "instance_name", None),
+                "WARMUP", "resumed_from_checkpoint",
+            )
         elif cp:
             result["run_mode"] = "restarted_config_changed"
             result["resumed_from_checkpoint"] = False
@@ -454,13 +463,25 @@ def run_warm_start_calibration(
                             result["fallback_used"] = False
                             result["trade_count_synthetic"] = int((best.get("oos_metrics") or {}).get("trade_count") or 0)
                             log.info("Warm-start final seed activated: config_id=%s", new_id)
+                            append_demo_lifecycle_event(
+                                config.artifacts_root, getattr(config, "instance_name", None),
+                                "WARMUP", "passable_config_found", config_id=new_id,
+                            )
                             _register_probation_candidate_if_enabled(config, new_id, demo_db_path)
                             result["checkpoint_cleared_reason"] = "viable_seed_found"
                             archive_checkpoint(artifact_dir)
                             _write_warm_start_artifact(artifact_dir, result, config)
+                            append_demo_lifecycle_event(
+                                config.artifacts_root, getattr(config, "instance_name", None),
+                                "DEMO_INIT", "init_complete_success", config_id=new_id,
+                            )
                             return result
                     else:
                         log.info("Warm-start batch %d winner rejected by acceptance: %s", batch_num + 1, rejection_reason)
+                        append_demo_lifecycle_event(
+                            config.artifacts_root, getattr(config, "instance_name", None),
+                            "WARMUP", "passable_config_rejected", reason=rejection_reason or "acceptance_failed",
+                        )
             else:
                 if search_meta.get("no_trades_reason"):
                     best_rejection_reason_seen = search_meta.get("no_trades_reason")
@@ -473,15 +494,31 @@ def run_warm_start_calibration(
         result["engine"] = "parameter_aware_protection_backtest"
         result["checkpoint_cleared_reason"] = "search_exhausted"
         archive_checkpoint(artifact_dir)
+        append_demo_lifecycle_event(
+            config.artifacts_root, getattr(config, "instance_name", None),
+            "WARMUP", "search_exhausted", reason=best_rejection_reason_seen or "no_viable_seed",
+        )
         if require_viable_seed_before_trading and not allow_fallback_if_no_viable_seed:
             log.info("No passable config found yet; Demo trading will not start")
+            append_demo_lifecycle_event(
+                config.artifacts_root, getattr(config, "instance_name", None),
+                "DEMO_INIT", "no_passable_config_found",
+            )
         else:
             log.info("Warm-start search exhausted after %d batches; no viable seed", result["batches_completed"])
         if allow_fallback_if_no_viable_seed:
             log.info("Warm-start fallback: search exhausted without viable seed; activating conservative seed")
             _apply_fallback_seed(demo_db_path, config, artifact_dir, result)
+            append_demo_lifecycle_event(
+                config.artifacts_root, getattr(config, "instance_name", None),
+                "DEMO_INIT", "init_complete_success", reason="fallback_seed",
+            )
         else:
             _write_warm_start_artifact(artifact_dir, result, config)
+            append_demo_lifecycle_event(
+                config.artifacts_root, getattr(config, "instance_name", None),
+                "DEMO_INIT", "init_complete_failure", reason="search_exhausted_no_fallback",
+            )
         return result
 
     # --- Single-batch path (search_until_viable=False): parameter-aware replay ---
@@ -552,9 +589,22 @@ def run_warm_start_calibration(
                     result["elapsed_seconds"] = round(time.time() - calibration_start, 2)
                     result["viable_seed_found"] = False
                     log.info("Warm-start replay winner rejected by seed acceptance: %s", rejection_reason)
+                    append_demo_lifecycle_event(
+                        config.artifacts_root, getattr(config, "instance_name", None),
+                        "WARMUP", "passable_config_rejected", reason=rejection_reason or "acceptance_failed",
+                    )
                     if fallback:
                         log.info("Warm-start fallback: replay winner rejected; activating conservative seed")
                         _apply_fallback_seed(demo_db_path, config, artifact_dir, result)
+                        append_demo_lifecycle_event(
+                            config.artifacts_root, getattr(config, "instance_name", None),
+                            "DEMO_INIT", "init_complete_success", reason="fallback_seed",
+                        )
+                    else:
+                        append_demo_lifecycle_event(
+                            config.artifacts_root, getattr(config, "instance_name", None),
+                            "DEMO_INIT", "init_complete_failure", reason="seed_rejected_no_fallback",
+                        )
                     _write_warm_start_artifact(artifact_dir, result, config)
                     return result
 
@@ -608,6 +658,14 @@ def run_warm_start_calibration(
                         result["reason"] = "warm_start_seeded_timeout_best_so_far"
                     result["viable_seed_found"] = True
                     log.info("Warm-start final seed activated: config_id=%s", new_id)
+                    append_demo_lifecycle_event(
+                        config.artifacts_root, getattr(config, "instance_name", None),
+                        "WARMUP", "passable_config_found", config_id=new_id,
+                    )
+                    append_demo_lifecycle_event(
+                        config.artifacts_root, getattr(config, "instance_name", None),
+                        "DEMO_INIT", "init_complete_success", config_id=new_id,
+                    )
                     _write_warm_start_artifact(artifact_dir, result, config)
                     return result
     except Exception as e:
@@ -736,10 +794,22 @@ def run_warm_start_calibration(
                 result["best_candidate_metrics"] = metrics
                 result["elapsed_seconds"] = round(time.time() - calibration_start, 2)
                 log.info("Warm-start legacy path: optimizer winner rejected by seed acceptance: %s", rejection_reason)
+                append_demo_lifecycle_event(
+                    config.artifacts_root, getattr(config, "instance_name", None),
+                    "WARMUP", "passable_config_rejected", reason=rejection_reason or "acceptance_failed",
+                )
                 if fallback:
                     log.info("Warm-start fallback: legacy winner rejected; activating conservative seed")
                     _apply_fallback_seed(demo_db_path, config, artifact_dir, result)
+                    append_demo_lifecycle_event(
+                        config.artifacts_root, getattr(config, "instance_name", None),
+                        "DEMO_INIT", "init_complete_success", reason="fallback_seed",
+                    )
                 else:
+                    append_demo_lifecycle_event(
+                        config.artifacts_root, getattr(config, "instance_name", None),
+                        "DEMO_INIT", "init_complete_failure", reason="seed_rejected_no_fallback",
+                    )
                     _write_warm_start_artifact(artifact_dir, result, config)
                 return result
 
@@ -782,6 +852,14 @@ def run_warm_start_calibration(
                 result["best_candidate_config_id"] = new_id
                 result["best_candidate_metrics"] = metrics
                 result["viable_seed_found"] = True
+                append_demo_lifecycle_event(
+                    config.artifacts_root, getattr(config, "instance_name", None),
+                    "WARMUP", "passable_config_found", config_id=new_id,
+                )
+                append_demo_lifecycle_event(
+                    config.artifacts_root, getattr(config, "instance_name", None),
+                    "DEMO_INIT", "init_complete_success", config_id=new_id,
+                )
                 _register_probation_candidate_if_enabled(config, new_id, demo_db_path)
                 _write_warm_start_artifact(artifact_dir, result, config)
                 return result
@@ -858,6 +936,10 @@ def _register_probation_candidate_if_enabled(config: Config, seed_config_id: str
         return
     if insert_probation_candidate(seed_config_id, demo_db_path):
         log.info("Demo probation candidate registered: config_id=%s", seed_config_id)
+        append_demo_lifecycle_event(
+            config.artifacts_root, getattr(config, "instance_name", None),
+            "PROBATION", "candidate_registered", config_id=seed_config_id,
+        )
 
 
 def _write_warm_start_artifact(artifact_dir: Path, result: dict[str, Any], config: Config) -> None:

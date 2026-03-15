@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from src.config.config import Config
 from src.evaluation.datasets import get_trade_durations_sec
 from src.evaluation.metrics import compute_core_metrics
+from src.lifecycle.logger import append_demo_lifecycle_event
 from src.demo_probation.store import (
     LIFECYCLE_ACTIVE_DEMO_BASELINE,
     LIFECYCLE_DEMO_PROBATION,
@@ -172,10 +173,14 @@ def evaluate_probation(
         fail_reasons.append("max_consecutive_losses_breach")
         return PROBATION_STATUS_FAILED, LIFECYCLE_DEMO_PROBATION_FAILED, fail_reasons, metrics_summary, FAILURE_REASON_FAIL_FAST_CONSECUTIVE_LOSSES
 
-    # --- Fail-fast: stall + poor metrics ---
+    # --- Fail-fast: stall + poor metrics (only when enough trade evidence exists) ---
+    min_trades_stall_failure = getattr(prob, "min_closed_trades_before_stall_metric_failure", 5)
     last_trade_ts = max(int(t.get("ts") or 0) for t in closed) if closed else started_ts
     stall_minutes_actual = (now_ms - last_trade_ts) / (60 * 1000)
     if stall_minutes_actual >= stall_minutes:
+        if len(closed) < min_trades_stall_failure:
+            reasons.append("stall_without_enough_trade_evidence")
+            return PROBATION_STATUS_IN_PROGRESS, LIFECYCLE_DEMO_PROBATION, reasons, metrics_summary, None
         poor_exp = fail_stalled_neg_exp and exp < 0
         poor_pf = pf < fail_stalled_pf_below
         if poor_exp or poor_pf:
@@ -282,4 +287,12 @@ def run_probation_fail_fast_check(db_path: str, config: Config) -> bool:
     )
     write_probation_status_artifact(config.artifacts_root, instance, payload)
     log.warning("Demo probation fail-fast: failed (reason_type=%s) %s", p_failure_type or "timer_evaluated", p_reasons)
+    append_demo_lifecycle_event(
+        config.artifacts_root, getattr(config, "instance_name", None),
+        "PROBATION", "failed",
+        config_id=prob_status["config_id"],
+        reason="; ".join(p_reasons) if p_reasons else None,
+        failure_reason_type=p_failure_type,
+        metrics=p_metrics,
+    )
     return True

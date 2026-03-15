@@ -10,7 +10,7 @@ from typing import Optional, Any
 import typer
 from loguru import logger
 
-from src.config.config import load_config, Config, EnvSettings, resolve_bybit_credentials, get_bybit_env, get_effective_equity_for_sizing, get_effective_operating_mode
+from src.config.config import load_config, Config, EnvSettings, resolve_bybit_credentials, get_bybit_env, get_effective_equity_for_sizing, get_effective_operating_mode, OPERATING_MODE_DEMO_RESEARCH
 from src.config.versioning import get_active_config_id, ensure_stage3_schema, load_config_from_artifact, register_config_version
 from src.exchange.bybit_client import BybitClient
 from src.exchange.ws_shard import PublicWSShardManager
@@ -37,6 +37,7 @@ from src.validation.burn_in import check_burnin_gates
 from src.validation.protection_audit import run_protection_audit
 from src.utils.logging import setup_logging, get_logger
 from src.cli.stage3_commands import register_stage3_cli
+from src.lifecycle.logger import append_demo_lifecycle_event
 
 log = get_logger(__name__)
 
@@ -1161,6 +1162,11 @@ class TradingBot:
         self._reinit_requested = False
         if not self._boot():
             return None
+        if get_effective_operating_mode(self.config, self.env) == OPERATING_MODE_DEMO_RESEARCH:
+            append_demo_lifecycle_event(
+                self.config.artifacts_root, getattr(self.config, "instance_name", None),
+                "RUNTIME", "runtime_started",
+            )
         t_context = threading.Thread(target=self._run_context_refresh, daemon=True)
         t_context.start()
         t_recon = threading.Thread(target=self._run_rest_reconciliation, daemon=True)
@@ -1171,6 +1177,25 @@ class TradingBot:
             self._score_and_enter_loop()
         finally:
             self.running = False
+            if get_effective_operating_mode(self.config, self.env) == OPERATING_MODE_DEMO_RESEARCH:
+                append_demo_lifecycle_event(
+                    self.config.artifacts_root, getattr(self.config, "instance_name", None),
+                    "RUNTIME", "runtime_stopped",
+                )
+                if getattr(self, "_reinit_requested", False):
+                    append_demo_lifecycle_event(
+                        self.config.artifacts_root, getattr(self.config, "instance_name", None),
+                        "RUNTIME", "runtime_exited_probation_failure",
+                    )
+                    append_demo_lifecycle_event(
+                        self.config.artifacts_root, getattr(self.config, "instance_name", None),
+                        "AUTO_REINIT", "reinit_requested",
+                    )
+                else:
+                    append_demo_lifecycle_event(
+                        self.config.artifacts_root, getattr(self.config, "instance_name", None),
+                        "RUNTIME", "runtime_exited_normal",
+                    )
             if self._ws_shards:
                 self._ws_shards.stop_all()
             self._client.stop_private_ws()

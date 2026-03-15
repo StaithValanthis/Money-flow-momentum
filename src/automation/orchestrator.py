@@ -13,6 +13,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Optional, Tuple
 
+from src.lifecycle.logger import append_demo_lifecycle_event
 from src.automation.state import (
     AutomationSnapshot,
     RECOMMENDATION_CONTINUE_DEMO,
@@ -268,6 +269,14 @@ def run_demo_automation_cycle(config_path: Optional[Path] = None) -> dict[str, A
                     )
                     write_probation_status_artifact(config.artifacts_root, instance, payload)
                     log.info("Demo probation passed; candidate promoted to active Demo baseline")
+                    append_demo_lifecycle_event(
+                        config.artifacts_root, getattr(config, "instance_name", None),
+                        "PROBATION", "passed", config_id=prob_status["config_id"],
+                    )
+                    append_demo_lifecycle_event(
+                        config.artifacts_root, getattr(config, "instance_name", None),
+                        "DEMO_BASELINE", "promoted", config_id=prob_status["config_id"],
+                    )
                 elif p_status == "FAILED":
                     apply_probation_result(
                         prob_status["config_id"], config.database_path, config,
@@ -281,6 +290,14 @@ def run_demo_automation_cycle(config_path: Optional[Path] = None) -> dict[str, A
                     )
                     write_probation_status_artifact(config.artifacts_root, instance, payload)
                     log.warning("Demo probation failed: %s (reason_type=%s)", p_reasons, p_failure_type or "timer_evaluated")
+                    append_demo_lifecycle_event(
+                        config.artifacts_root, getattr(config, "instance_name", None),
+                        "PROBATION", "failed",
+                        config_id=prob_status["config_id"],
+                        reason="; ".join(p_reasons) if p_reasons else None,
+                        failure_reason_type=p_failure_type,
+                        metrics=p_metrics,
+                    )
 
         if gate_breaches > 0:
             snap.last_recommendation_status = RECOMMENDATION_NOT_READY

@@ -466,6 +466,10 @@ class DemoProbationConfig(BaseModel):
     fail_fast_on_kill_switch: bool = True
     fail_fast_on_hard_block: bool = True
     no_trade_stall_minutes: int = Field(default=10, ge=1, le=10080)  # 1 week max
+    min_closed_trades_before_stall_metric_failure: int = Field(
+        default=5, ge=0, le=10_000,
+        description="Min closed trades required before stall+poor-metrics can fail probation (avoids failing on zero/empty evidence)",
+    )
     fail_if_stalled_and_negative_expectancy: bool = True
     fail_if_stalled_and_pf_below: float = Field(default=0.90, ge=0.0, le=2.0)
     auto_reinit_after_failure: bool = False

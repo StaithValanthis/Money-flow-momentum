@@ -1043,6 +1043,52 @@ def register_stage3_cli(app: typer.Typer) -> None:
             typer.echo(f"Demo init finished: {result.get('reason', '')}")
         raise typer.Exit(0 if result.get("success") else 1)
 
+    lifecycle_app = typer.Typer(help="Unified Demo lifecycle log (single stream for init, probation, reinit)")
+    @lifecycle_app.command("path")
+    def demo_lifecycle_path_cmd(
+        config_path: Optional[Path] = typer.Option(None, "--config", "-c"),
+        jsonl: bool = typer.Option(False, "--jsonl", help="Print JSONL path instead of human log"),
+    ) -> None:
+        """Print path to Demo lifecycle log (or JSONL). Use: tail -f <path> to follow."""
+        from src.lifecycle.logger import get_demo_lifecycle_log_path, get_demo_lifecycle_jsonl_path
+        config, _ = load_config(config_path)
+        root = getattr(config, "artifacts_root", "artifacts")
+        instance = getattr(config, "instance_name", None)
+        if jsonl:
+            p = get_demo_lifecycle_jsonl_path(root, instance)
+        else:
+            p = get_demo_lifecycle_log_path(root, instance)
+        typer.echo(str(p))
+    @lifecycle_app.command("tail")
+    def demo_lifecycle_tail_cmd(
+        config_path: Optional[Path] = typer.Option(None, "--config", "-c"),
+        lines: int = typer.Option(20, "--lines", "-n", help="Number of lines to show before following"),
+    ) -> None:
+        """Follow the Demo lifecycle log (like tail -f)."""
+        import time
+        from src.lifecycle.logger import get_demo_lifecycle_log_path
+        config, _ = load_config(config_path)
+        path = get_demo_lifecycle_log_path(config.artifacts_root, getattr(config, "instance_name", None))
+        if not path.exists():
+            typer.echo("Lifecycle log not created yet: %s" % path)
+            raise typer.Exit(1)
+        try:
+            content = path.read_text(encoding="utf-8")
+            all_lines = content.splitlines()
+            for line in all_lines[-lines:]:
+                typer.echo(line)
+            with open(path, "r", encoding="utf-8") as f:
+                f.seek(0, 2)
+                while True:
+                    line = f.readline()
+                    if line:
+                        typer.echo(line.rstrip())
+                    else:
+                        time.sleep(0.3)
+        except KeyboardInterrupt:
+            pass
+    demo_app.add_typer(lifecycle_app, name="lifecycle")
+
     probation_app = typer.Typer(help="Demo probation: candidate validation via real Demo results")
     @probation_app.command("status")
     def demo_probation_status_cmd(

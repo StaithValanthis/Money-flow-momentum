@@ -169,7 +169,7 @@ def test_probation_evaluator_in_progress_insufficient_sample(demo_db, config_wit
     db.close()
     status, lifecycle, reasons, metrics, failure_type = evaluate_probation(demo_db, config_with_probation, config_id=cid)
     assert status == PROBATION_STATUS_IN_PROGRESS
-    assert "sample_or_runtime_not_reached" in reasons
+    assert "sample_or_runtime_not_reached" in reasons or "stall_without_enough_trade_evidence" in reasons
     assert failure_type is None
 
 
@@ -337,13 +337,82 @@ def test_fail_fast_hard_block(demo_db, config_with_probation):
     assert "hard_block" in str(reasons).lower()
 
 
+def test_zero_closed_trades_stalled_does_not_fail_stall_metrics(demo_db, config_with_probation):
+    """Zero closed trades + stalled runtime must NOT trigger fail_fast_stalled_poor_metrics (stay IN_PROGRESS)."""
+    import time as _time
+    config_with_probation.demo_probation.no_trade_stall_minutes = 1
+    config_with_probation.demo_probation.min_closed_trades_before_stall_metric_failure = 5
+    ensure_stage3_schema(demo_db)
+    cid = register_config_version(
+        config_with_probation,
+        version="test",
+        status="candidate",
+        description="test",
+        source="manual",
+        db_path=demo_db,
+    )
+    activate_config_version(cid, demo_db, reason="test", manual=False)
+    insert_probation_candidate(cid, demo_db)
+    now_ms = int(_time.time() * 1000)
+    started = now_ms - 120000
+    db = Database(demo_db)
+    conn = db._get_conn()
+    conn.execute("UPDATE demo_probation SET started_at_ts = ? WHERE config_id = ?", (started, cid))
+    conn.commit()
+    db.close()
+    status, lifecycle, reasons, metrics, failure_type = evaluate_probation(demo_db, config_with_probation, config_id=cid)
+    assert status == PROBATION_STATUS_IN_PROGRESS
+    assert failure_type is None
+    assert "stall_without_enough_trade_evidence" in reasons
+    assert metrics.get("closed_trades", 0) == 0
+
+
+def test_insufficient_closed_trades_stalled_does_not_fail_stall_metrics(demo_db, config_with_probation):
+    """Low but insufficient closed trades + stalled + poor PF/exp must NOT trigger fail_fast_stalled_poor_metrics."""
+    import time as _time
+    from src.demo_probation.evaluator import FAILURE_REASON_FAIL_FAST_STALLED_POOR_METRICS
+    config_with_probation.demo_probation.no_trade_stall_minutes = 1
+    config_with_probation.demo_probation.min_closed_trades_before_stall_metric_failure = 5
+    config_with_probation.demo_probation.fail_if_stalled_and_pf_below = 0.95
+    config_with_probation.demo_probation.fail_if_stalled_and_negative_expectancy = True
+    ensure_stage3_schema(demo_db)
+    cid = register_config_version(
+        config_with_probation,
+        version="test",
+        status="candidate",
+        description="test",
+        source="manual",
+        db_path=demo_db,
+    )
+    activate_config_version(cid, demo_db, reason="test", manual=False)
+    insert_probation_candidate(cid, demo_db)
+    now_ms = int(_time.time() * 1000)
+    started = now_ms - 120000
+    db = Database(demo_db)
+    conn = db._get_conn()
+    conn.execute("UPDATE demo_probation SET started_at_ts = ? WHERE config_id = ?", (started, cid))
+    conn.commit()
+    for i in range(3):
+        conn.execute(
+            "INSERT INTO trades (ts, symbol, side, qty, price, order_id, order_link_id, pnl, config_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (started + i * 100, "BTCUSDT", "Buy", 0.01, 100.0, f"o{i}", f"exit_{i}", -0.5, cid),
+        )
+    conn.commit()
+    db.close()
+    status, lifecycle, reasons, metrics, failure_type = evaluate_probation(demo_db, config_with_probation, config_id=cid)
+    assert status == PROBATION_STATUS_IN_PROGRESS
+    assert failure_type is not FAILURE_REASON_FAIL_FAST_STALLED_POOR_METRICS
+    assert "stall_without_enough_trade_evidence" in reasons
+
+
 def test_fail_fast_stalled_poor_metrics(demo_db, config_with_probation):
-    """Probation fails with fail_fast_stalled_poor_metrics when no trades for stall window and PF/expectancy poor."""
+    """Probation fails with fail_fast_stalled_poor_metrics when enough trades, stall, and PF/expectancy poor."""
     import time as _time
     from src.demo_probation.evaluator import FAILURE_REASON_FAIL_FAST_STALLED_POOR_METRICS
     config_with_probation.demo_probation.no_trade_stall_minutes = 1
     config_with_probation.demo_probation.fail_if_stalled_and_pf_below = 0.95
     config_with_probation.demo_probation.fail_if_stalled_and_negative_expectancy = True
+    config_with_probation.demo_probation.min_closed_trades_before_stall_metric_failure = 5
     ensure_stage3_schema(demo_db)
     cid = register_config_version(
         config_with_probation,
