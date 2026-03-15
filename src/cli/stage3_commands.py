@@ -508,6 +508,54 @@ def register_stage3_cli(app: typer.Typer) -> None:
 
     app.add_typer(promote_app, name="promote")
 
+    # --- Master bot journal (single system-wide log) ---
+    journal_app = typer.Typer(help="Master bot journal: single log for full lifecycle (Demo + Live)")
+    @journal_app.command("path")
+    def journal_path_cmd(
+        config_path: Optional[Path] = typer.Option(None, "--config", "-c"),
+        jsonl: bool = typer.Option(False, "--jsonl", help="Print JSONL path instead of human log"),
+    ) -> None:
+        """Print path to master bot journal. Use: tail -f <path> to follow."""
+        from src.journal.logger import get_journal_log_path, get_journal_jsonl_path
+        config, _ = load_config(config_path)
+        root = getattr(config, "artifacts_root", "artifacts")
+        if jsonl:
+            p = get_journal_jsonl_path(root)
+        else:
+            p = get_journal_log_path(root)
+        typer.echo(str(p))
+    @journal_app.command("tail")
+    def journal_tail_cmd(
+        config_path: Optional[Path] = typer.Option(None, "--config", "-c"),
+        lines: int = typer.Option(100, "--lines", "-n", help="Number of lines to show before following"),
+        jsonl: bool = typer.Option(False, "--jsonl", help="Tail the JSONL file instead"),
+    ) -> None:
+        """Follow the master bot journal (like tail -f)."""
+        import time
+        from src.journal.logger import get_journal_log_path, get_journal_jsonl_path
+        config, _ = load_config(config_path)
+        root = getattr(config, "artifacts_root", "artifacts")
+        path = get_journal_jsonl_path(root) if jsonl else get_journal_log_path(root)
+        if not path.exists():
+            typer.echo("Journal not created yet: %s" % path)
+            raise typer.Exit(1)
+        try:
+            content = path.read_text(encoding="utf-8")
+            all_lines = content.splitlines()
+            for line in all_lines[-lines:]:
+                typer.echo(line)
+            with open(path, "r", encoding="utf-8") as f:
+                f.seek(0, 2)
+                while True:
+                    line = f.readline()
+                    if line:
+                        typer.echo(line.rstrip())
+                    else:
+                        time.sleep(0.3)
+        except KeyboardInterrupt:
+            pass
+    app.add_typer(journal_app, name="journal")
+
     @app.command()
     def rollback(
         config_path: Optional[Path] = typer.Option(None, "--config", "-c"),
@@ -709,6 +757,13 @@ def register_stage3_cli(app: typer.Typer) -> None:
 
         _config, _ = load_config(cfg)
         art_path = write_promotion_artifact(report, Path(_config.artifacts_root))
+        from src.journal.logger import append_journal_event
+        append_journal_event(
+            _config.artifacts_root, "LIVE_PROMOTION", "env_switch_to_live",
+            instance="live",
+            reason=reason or "promote-env confirmed",
+            status="completed",
+        )
         typer.echo("")
         typer.echo("Promotion applied.")
         typer.echo("  Files changed: %s" % ", ".join(report.get("files_changed", [])))
@@ -761,6 +816,9 @@ def register_stage3_cli(app: typer.Typer) -> None:
         demo_db = _demo.database_path
         live_db = _live.database_path
         live_artifact_dir = Path(_live.artifacts_root) / "configs"
+        from src.journal.logger import append_journal_event
+        art_root = _live.artifacts_root
+        append_journal_event(art_root, "LIVE_PROMOTION", "started", instance="live", candidate_config_id=candidate_config_id)
         result = import_candidate_to_live(
             candidate_config_id=candidate_config_id,
             demo_db_path=demo_db,
@@ -771,6 +829,15 @@ def register_stage3_cli(app: typer.Typer) -> None:
             activate=activate,
             dry_run=dry_run,
         )
+        if result.get("ok"):
+            append_journal_event(
+                art_root, "LIVE_PROMOTION", "completed",
+                instance="live",
+                candidate_config_id=candidate_config_id,
+                config_id=result.get("live_config_id"),
+                reason="imported" if result.get("imported") else "already_present",
+                status="activated" if result.get("activated") else "imported",
+            )
         typer.echo("=== Promote to Live (Demo candidate -> Live instance) ===")
         typer.echo("candidate_config_id: %s" % result["candidate_config_id"])
         typer.echo("demo_db: %s" % demo_db)

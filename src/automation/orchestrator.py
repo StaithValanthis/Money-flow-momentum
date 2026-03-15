@@ -13,6 +13,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Optional, Tuple
 
+from src.journal.logger import append_journal_event as journal_append
 from src.lifecycle.logger import append_demo_lifecycle_event
 from src.automation.state import (
     AutomationSnapshot,
@@ -244,6 +245,12 @@ def run_demo_automation_cycle(config_path: Optional[Path] = None) -> dict[str, A
                 ],
             }
             _write_recommendation_artifacts(config, snap, details)
+            journal_append(
+                config.artifacts_root, "RUNTIME", "blocked",
+                instance=getattr(config, "instance_name", None) or "demo",
+                reason="kill_switch_in_window",
+                status=STATE_BLOCKED_BY_KILL_SWITCH,
+            )
             return {"snapshot": asdict(snap), "details": details}
 
         # --- Demo probation: evaluate active candidate from real Demo data ---
@@ -317,6 +324,12 @@ def run_demo_automation_cycle(config_path: Optional[Path] = None) -> dict[str, A
                 ],
             }
             _write_recommendation_artifacts(config, snap, details)
+            journal_append(
+                config.artifacts_root, "RUNTIME", "blocked",
+                instance=getattr(config, "instance_name", None) or "demo",
+                reason="burnin_gate_breach",
+                status=STATE_BLOCKED_BY_BURNIN,
+            )
             return {"snapshot": asdict(snap), "details": details}
 
         # trade_count > 0 but readiness NOT_READY (e.g. kill switch already handled above) => blocked by health
@@ -337,6 +350,12 @@ def run_demo_automation_cycle(config_path: Optional[Path] = None) -> dict[str, A
                 ],
             }
             _write_recommendation_artifacts(config, snap, details)
+            journal_append(
+                config.artifacts_root, "RUNTIME", "blocked",
+                instance=getattr(config, "instance_name", None) or "demo",
+                reason=reason,
+                status=STATE_BLOCKED_BY_HEALTH,
+            )
             return {"snapshot": asdict(snap), "details": details}
 
         if trade_count <= 0:
@@ -503,6 +522,11 @@ def run_demo_automation_cycle(config_path: Optional[Path] = None) -> dict[str, A
         if snap.best_candidate_config_id:
             snap.last_recommendation_status = RECOMMENDATION_READY_FOR_CONFIG_REVIEW
             snap = transition(snap, STATE_AWAITING_MANUAL_APPROVAL)
+            journal_append(
+                config.artifacts_root, "CANDIDATE", "ready_for_review",
+                instance=getattr(config, "instance_name", None) or "demo",
+                candidate_config_id=snap.best_candidate_config_id,
+            )
         else:
             snap.last_recommendation_status = RECOMMENDATION_CONTINUE_DEMO
             if snap.state not in (STATE_SHADOW_RUNNING, STATE_CANDIDATE_AVAILABLE):

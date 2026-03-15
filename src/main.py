@@ -1167,6 +1167,13 @@ class TradingBot:
                 self.config.artifacts_root, getattr(self.config, "instance_name", None),
                 "RUNTIME", "runtime_started",
             )
+        else:
+            from src.journal.logger import append_journal_event
+            append_journal_event(
+                self.config.artifacts_root, "LIVE_RUNTIME", "runtime_started",
+                instance=getattr(self.config, "instance_name", None) or "live",
+                config_id=getattr(self, "_config_id", None),
+            )
         t_context = threading.Thread(target=self._run_context_refresh, daemon=True)
         t_context.start()
         t_recon = threading.Thread(target=self._run_rest_reconciliation, daemon=True)
@@ -1196,6 +1203,16 @@ class TradingBot:
                         self.config.artifacts_root, getattr(self.config, "instance_name", None),
                         "RUNTIME", "runtime_exited_normal",
                     )
+            else:
+                from src.journal.logger import append_journal_event
+                kill = getattr(getattr(self, "_risk", None), "kill_switch_triggered", False)
+                append_journal_event(
+                    self.config.artifacts_root, "LIVE_RUNTIME", "runtime_stopped",
+                    instance=getattr(self.config, "instance_name", None) or "live",
+                    config_id=getattr(self, "_config_id", None),
+                    reason="kill_switch" if kill else None,
+                    status="degraded" if kill else "normal",
+                )
             if self._ws_shards:
                 self._ws_shards.stop_all()
             self._client.stop_private_ws()
