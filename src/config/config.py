@@ -386,6 +386,24 @@ class WarmStartConfig(BaseModel):
         description="When search exhausted with no viable seed: if True activate fallback; if False do not start trading",
     )
 
+    # Outer init retry loop (Demo-only): retry demo init when no passable config found
+    retry_init_until_passable: bool = Field(
+        default=False,
+        description="If True, wrapper/script retries demo init after no passable config (exit code 21); inner search budget unchanged",
+    )
+    retry_init_sleep_seconds: int = Field(
+        default=300,
+        ge=10,
+        le=86400,
+        description="Seconds to wait between init retry attempts when no passable config found",
+    )
+    max_init_retry_attempts: int = Field(
+        default=0,
+        ge=0,
+        le=10000,
+        description="Max outer init retries (0 = unlimited); only when retry_init_until_passable=True",
+    )
+
     # Backtest-style historical evaluation costs (Demo-only; do not affect Live runtime)
     backtest_fee_bps: float = Field(
         default=6.0,
@@ -465,6 +483,12 @@ class DemoProbationConfig(BaseModel):
     # Fail-fast: reject obviously failed candidates immediately / on next tick (Demo-only)
     fail_fast_on_kill_switch: bool = True
     fail_fast_on_hard_block: bool = True
+    min_closed_trades_before_consecutive_loss_failure: int = Field(
+        default=8,
+        ge=0,
+        le=10_000,
+        description="Min closed trades required before consecutive-loss fail-fast can trigger (avoids failing on too-small startup evidence)",
+    )
     no_trade_stall_minutes: int = Field(default=10, ge=1, le=10080)  # 1 week max
     min_closed_trades_before_stall_metric_failure: int = Field(
         default=5, ge=0, le=10_000,

@@ -2,7 +2,13 @@
 # Start Demo research instance (operating_mode=demo_research). Uses config/config.demo.yaml and .env.demo.
 # Paths: data/demo/, artifacts/demo/, logs/demo/. Safe to run alongside Live instance.
 # When demo_probation.auto_reinit_after_failure is true, probation failure triggers re-init and restart loop.
+# When warm_start.retry_init_until_passable is true, init is retried after no passable config (exit 21).
 # Usage: ./scripts/start_demo_research.sh [--foreground]
+#
+# Exit codes from demo init:
+#   0  = success (passable config found)
+#   21 = no passable config found, retryable (script sleeps and retries init)
+#   1 or other = hard failure; script exits
 #
 # Exit codes from Demo runtime:
 #   0  = normal clean exit (operator stop, etc.)
@@ -18,6 +24,8 @@ FOREGROUND=0
 
 # Exit code from bot when probation failed and re-init is requested (Demo-only)
 EXIT_PROBATION_REINIT=20
+# Exit code from demo init when no passable config found (retry after delay)
+EXIT_NO_PASSABLE_CONFIG_RETRY=21
 
 if [ -f venv/bin/activate ]; then
     set +u
@@ -32,6 +40,14 @@ if [ ! -f "$CONFIG" ]; then
 fi
 python run_bot.py validate --config "$CONFIG" || exit 1
 
+# Retry config for init (used when init returns 21)
+RETRY_SLEEP=300
+MAX_RETRIES=0
+if tmp=$(python run_bot.py demo init-retry-config --config "$CONFIG" 2>/dev/null); then
+    RETRY_SLEEP=$(echo "$tmp" | head -1)
+    MAX_RETRIES=$(echo "$tmp" | tail -1)
+fi
+
 # Check if auto_reinit_after_failure is enabled so we can run the recovery loop
 AUTO_REINIT=0
 if python run_bot.py demo probation auto-reinit-enabled --config "$CONFIG" 2>/dev/null; then
@@ -40,39 +56,59 @@ fi
 
 run_demo_init() {
     echo "=== Demo initialization ==="
-    if ! python run_bot.py demo init --config "$CONFIG"; then
-        echo "No passable config found; Demo trading will remain stopped."
-        return 1
-    fi
-    echo "Demo initialization succeeded; starting Demo runtime."
-    return 0
+    python run_bot.py demo init --config "$CONFIG"
+    return $?
 }
 
 run_demo_runtime() {
-    # When in auto-reinit loop we always run in this process to capture exit code (e.g. 20).
     python run_bot.py run --config "$CONFIG"
 }
 
-if [ "$AUTO_REINIT" = "1" ]; then
-    # Recovery loop: on probation failure (exit 20) re-run demo init and start again.
-    # Runtime runs in this process so we can capture exit code.
+# Run init until success (0) or hard failure (not 21). On 21: log, sleep, retry (respecting MAX_RETRIES).
+run_init_until_success() {
+    attempt=1
     while true; do
-        run_demo_init || exit 1
+        export DEMO_INIT_ATTEMPT=$attempt
+        run_demo_init
+        INIT_EC=$?
+        if [ $INIT_EC -eq 0 ]; then
+            echo "Demo initialization succeeded; starting Demo runtime."
+            return 0
+        fi
+        if [ $INIT_EC -eq $EXIT_NO_PASSABLE_CONFIG_RETRY ]; then
+            echo "No passable config found; retrying initialization in $RETRY_SLEEP seconds"
+            if [ "$MAX_RETRIES" -gt 0 ] && [ $attempt -ge "$MAX_RETRIES" ]; then
+                echo "Max init retry attempts ($MAX_RETRIES) reached; stopping."
+                exit 1
+            fi
+            sleep "$RETRY_SLEEP"
+            attempt=$((attempt + 1))
+            continue
+        fi
+        echo "Demo init failed (exit $INIT_EC); stopping."
+        exit $INIT_EC
+    done
+}
+
+if [ "$AUTO_REINIT" = "1" ]; then
+    # Full loop: init (with retries on 21) -> runtime; on runtime exit 20 re-init
+    while true; do
+        run_init_until_success
         run_demo_runtime
-        EC=$?
-        if [ $EC -eq 0 ]; then
+        RUNTIME_EC=$?
+        if [ $RUNTIME_EC -eq 0 ]; then
             echo "Demo runtime exited normally; not restarting."
             exit 0
         fi
-        if [ $EC -eq $EXIT_PROBATION_REINIT ]; then
+        if [ $RUNTIME_EC -eq $EXIT_PROBATION_REINIT ]; then
             echo "Demo runtime exited due to probation failure; re-initializing."
             continue
         fi
-        exit $EC
+        exit $RUNTIME_EC
     done
 else
-    # Single init + run (no loop)
-    run_demo_init || exit 1
+    # Single init (with retries on 21) + run once
+    run_init_until_success
     if [ "$FOREGROUND" = "1" ]; then
         exec python run_bot.py run --config "$CONFIG"
     fi

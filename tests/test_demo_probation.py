@@ -111,10 +111,12 @@ def test_probation_evaluator_fail_kill_switch(demo_db, config_with_probation):
 
 
 def test_probation_evaluator_fail_consecutive_losses(demo_db, config_with_probation):
-    """Probation fails when max_consecutive_losses breached (e.g. 5 losses at end)."""
+    """Probation fails when max_consecutive_losses breached and enough trade evidence (e.g. 10 trades, 5 losses at end)."""
     ensure_stage3_schema(demo_db)
+    cfg = config_with_probation
+    cfg.demo_probation.min_closed_trades_before_consecutive_loss_failure = 8
     cid = register_config_version(
-        config_with_probation,
+        cfg,
         version="test",
         status="candidate",
         description="test",
@@ -136,10 +138,80 @@ def test_probation_evaluator_fail_consecutive_losses(demo_db, config_with_probat
         )
     conn.commit()
     db.close()
-    status, lifecycle, reasons, metrics, failure_type = evaluate_probation(demo_db, config_with_probation, config_id=cid)
+    status, lifecycle, reasons, metrics, failure_type = evaluate_probation(demo_db, cfg, config_id=cid)
     assert status == PROBATION_STATUS_FAILED
     assert "max_consecutive_losses_breach" in reasons or "max_consecutive_losses" in str(reasons)
     assert failure_type == "fail_fast_consecutive_losses"
+
+
+def test_probation_consecutive_losses_no_fail_before_min_trades(demo_db, config_with_probation):
+    """5 closed trades + 5 consecutive losses does NOT fail when min_closed_trades_before_consecutive_loss_failure=8."""
+    ensure_stage3_schema(demo_db)
+    cfg = config_with_probation
+    cfg.demo_probation.max_consecutive_losses = 5
+    cfg.demo_probation.min_closed_trades_before_consecutive_loss_failure = 8
+    cid = register_config_version(
+        cfg,
+        version="test",
+        status="candidate",
+        description="test",
+        source="manual",
+        db_path=demo_db,
+    )
+    activate_config_version(cid, demo_db, reason="test", manual=False)
+    insert_probation_candidate(cid, demo_db)
+    started = 1000000
+    db = Database(demo_db)
+    conn = db._get_conn()
+    conn.execute("UPDATE demo_probation SET started_at_ts = ? WHERE config_id = ?", (started, cid))
+    conn.commit()
+    for i in range(5):
+        pnl = -1.0
+        conn.execute(
+            "INSERT INTO trades (ts, symbol, side, qty, price, order_id, order_link_id, pnl, config_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (started + i * 1000, "BTCUSDT", "Buy", 0.01, 100.0, f"o{i}", f"exit_{i}", pnl, cid),
+        )
+    conn.commit()
+    db.close()
+    status, lifecycle, reasons, metrics, failure_type = evaluate_probation(demo_db, cfg, config_id=cid)
+    assert status == PROBATION_STATUS_IN_PROGRESS
+    assert failure_type is None
+    assert "consecutive_losses_without_enough_trade_evidence" in reasons
+
+
+def test_probation_consecutive_losses_fail_when_enough_trades(demo_db, config_with_probation):
+    """Enough closed trades (8) + consecutive loss breach DOES fail."""
+    ensure_stage3_schema(demo_db)
+    cfg = config_with_probation
+    cfg.demo_probation.max_consecutive_losses = 5
+    cfg.demo_probation.min_closed_trades_before_consecutive_loss_failure = 8
+    cid = register_config_version(
+        cfg,
+        version="test",
+        status="candidate",
+        description="test",
+        source="manual",
+        db_path=demo_db,
+    )
+    activate_config_version(cid, demo_db, reason="test", manual=False)
+    insert_probation_candidate(cid, demo_db)
+    started = 1000000
+    db = Database(demo_db)
+    conn = db._get_conn()
+    conn.execute("UPDATE demo_probation SET started_at_ts = ? WHERE config_id = ?", (started, cid))
+    conn.commit()
+    for i in range(8):
+        pnl = -1.0
+        conn.execute(
+            "INSERT INTO trades (ts, symbol, side, qty, price, order_id, order_link_id, pnl, config_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (started + i * 1000, "BTCUSDT", "Buy", 0.01, 100.0, f"o{i}", f"exit_{i}", pnl, cid),
+        )
+    conn.commit()
+    db.close()
+    status, lifecycle, reasons, metrics, failure_type = evaluate_probation(demo_db, cfg, config_id=cid)
+    assert status == PROBATION_STATUS_FAILED
+    assert failure_type == "fail_fast_consecutive_losses"
+    assert "max_consecutive_losses_breach" in reasons
 
 
 def test_probation_evaluator_in_progress_insufficient_sample(demo_db, config_with_probation):
@@ -402,7 +474,8 @@ def test_insufficient_closed_trades_stalled_does_not_fail_stall_metrics(demo_db,
     status, lifecycle, reasons, metrics, failure_type = evaluate_probation(demo_db, config_with_probation, config_id=cid)
     assert status == PROBATION_STATUS_IN_PROGRESS
     assert failure_type is not FAILURE_REASON_FAIL_FAST_STALLED_POOR_METRICS
-    assert "stall_without_enough_trade_evidence" in reasons
+    # May be stall_without_enough_trade_evidence or consecutive_losses_without_enough_trade_evidence (3 losses, < min trades)
+    assert "stall_without_enough_trade_evidence" in reasons or "consecutive_losses_without_enough_trade_evidence" in reasons
 
 
 def test_fail_fast_stalled_poor_metrics(demo_db, config_with_probation):

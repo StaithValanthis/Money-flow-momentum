@@ -1078,13 +1078,26 @@ def register_stage3_cli(app: typer.Typer) -> None:
 
     # --- Demo init: single operator-facing initialization workflow (warmup = init) ---
     demo_app = typer.Typer(help="Demo instance: initialization and status")
+    # Exit code 21 = no passable config found, retry init later (wrapper may sleep and retry)
+    EXIT_NO_PASSABLE_CONFIG_RETRY = 21
+
     @demo_app.command("init")
     def demo_init_cmd(
         config_path: Optional[Path] = typer.Option(None, "--config", "-c"),
     ) -> None:
-        """Run Demo initialization: resume if checkpoint exists, search until passable config, activate seed. Exit non-zero if no viable config and trading is gated."""
+        """Run Demo initialization: resume if checkpoint exists, search until passable config, activate seed. Exit 21 if no viable config and retry enabled; exit 1 on hard failure."""
+        import os
         from src.warm_start import run_demo_init
+        from src.journal.logger import append_journal_event
         config, _ = load_config(config_path)
+        attempt = int(os.environ.get("DEMO_INIT_ATTEMPT", "1"))
+        if attempt > 1:
+            append_journal_event(
+                config.artifacts_root, "AUTO_RETRY", "init_retry_started",
+                instance=getattr(config, "instance_name", None) or "demo",
+                metrics={"attempt": attempt},
+            )
+            typer.echo("Demo init retry attempt %d" % attempt)
         typer.echo("Demo initialization started")
         result = run_demo_init(
             demo_db_path=config.database_path,
@@ -1101,14 +1114,53 @@ def register_stage3_cli(app: typer.Typer) -> None:
         if result.get("viable_seed_found") and result.get("success"):
             typer.echo("Passable config found; activating Demo seed")
         require_viable = bool(getattr(config.warm_start, "require_viable_seed_before_trading", False))
+        retry_until_passable = bool(getattr(config.warm_start, "retry_init_until_passable", False))
+        max_retries = int(getattr(config.warm_start, "max_init_retry_attempts", 0))
+
         if require_viable and not result.get("viable_seed_found"):
             typer.echo("No passable config found yet; Demo trading will not start")
+            if retry_until_passable:
+                if max_retries > 0 and attempt >= max_retries:
+                    typer.echo("Max init retry attempts (%d) reached; stopping." % max_retries)
+                    append_journal_event(
+                        config.artifacts_root, "AUTO_RETRY", "init_retry_exhausted",
+                        instance=getattr(config, "instance_name", None) or "demo",
+                        reason="max_retry_attempts_reached",
+                        metrics={"attempt": attempt, "max_attempts": max_retries},
+                    )
+                    raise typer.Exit(1)
+                sleep_sec = int(getattr(config.warm_start, "retry_init_sleep_seconds", 300))
+                append_journal_event(
+                    config.artifacts_root, "AUTO_RETRY", "init_retry_scheduled",
+                    instance=getattr(config, "instance_name", None) or "demo",
+                    reason="no_passable_config_found",
+                    metrics={"sleep_seconds": sleep_sec, "attempt": attempt},
+                )
+                typer.echo("Initialization exhausted search budget without a candidate; exit 21 (retryable).")
+                raise typer.Exit(EXIT_NO_PASSABLE_CONFIG_RETRY)
             raise typer.Exit(1)
         if result.get("success"):
             typer.echo("Demo initialization complete")
+            append_journal_event(
+                config.artifacts_root, "DEMO_INIT", "init_succeeded",
+                instance=getattr(config, "instance_name", None) or "demo",
+                config_id=result.get("seed_config_id"),
+            )
         else:
             typer.echo(f"Demo init finished: {result.get('reason', '')}")
         raise typer.Exit(0 if result.get("success") else 1)
+
+    @demo_app.command("init-retry-config")
+    def demo_init_retry_config_cmd(
+        config_path: Optional[Path] = typer.Option(None, "--config", "-c"),
+    ) -> None:
+        """Print retry_init_sleep_seconds and max_init_retry_attempts for wrapper script (one value per line)."""
+        config, _ = load_config(config_path)
+        warm = getattr(config, "warm_start", None)
+        sleep = int(getattr(warm, "retry_init_sleep_seconds", 300))
+        max_attempts = int(getattr(warm, "max_init_retry_attempts", 0))
+        typer.echo(sleep)
+        typer.echo(max_attempts)
 
     lifecycle_app = typer.Typer(help="Unified Demo lifecycle log (single stream for init, probation, reinit)")
     @lifecycle_app.command("path")

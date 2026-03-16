@@ -168,8 +168,12 @@ def evaluate_probation(
         fail_reasons.append("hard_block_burnin_or_automation")
         return PROBATION_STATUS_FAILED, LIFECYCLE_DEMO_PROBATION_FAILED, fail_reasons, metrics_summary, FAILURE_REASON_FAIL_FAST_HARD_BLOCK
 
-    # --- Fail-fast: consecutive losses (immediate trigger) ---
-    if len(closed) >= min(5, min_trades) and cons_losses >= max_cons:
+    # --- Fail-fast: consecutive losses (only when enough trade evidence) ---
+    min_trades_cons = getattr(prob, "min_closed_trades_before_consecutive_loss_failure", 8)
+    if cons_losses >= max_cons:
+        if len(closed) < min_trades_cons:
+            reasons.append("consecutive_losses_without_enough_trade_evidence")
+            return PROBATION_STATUS_IN_PROGRESS, LIFECYCLE_DEMO_PROBATION, reasons, metrics_summary, None
         fail_reasons.append("max_consecutive_losses_breach")
         return PROBATION_STATUS_FAILED, LIFECYCLE_DEMO_PROBATION_FAILED, fail_reasons, metrics_summary, FAILURE_REASON_FAIL_FAST_CONSECUTIVE_LOSSES
 
