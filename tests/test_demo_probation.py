@@ -744,6 +744,10 @@ def test_start_demo_script_has_reinit_loop_and_exit_code():
     assert "auto_reinit_after_failure" in text or "auto-reinit-enabled" in text
     assert "re-initializing" in text or "re-initializing" in text.lower()
     assert "Demo runtime exited due to probation failure" in text
+    # Exit 20 must be captured, not trigger set -e: script uses set +e around runtime so it can loop
+    assert "set +e" in text
+    assert "RUNTIME_EC=$?" in text
+    assert "RUNTIME_EC" in text and "EXIT_PROBATION_REINIT" in text
 
 
 def test_run_probation_fail_fast_check_writes_artifact_before_returning_true(demo_db, config_with_probation, tmp_path):

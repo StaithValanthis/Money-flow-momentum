@@ -65,19 +65,22 @@ run_demo_runtime() {
 }
 
 # Run init until success (0) or hard failure (not 21). On 21: log, sleep, retry (respecting MAX_RETRIES).
+# Must not let set -e trigger on init exit 21; we need to capture and handle it.
 run_init_until_success() {
     attempt=1
     while true; do
         export DEMO_INIT_ATTEMPT=$attempt
+        set +e
         run_demo_init
         INIT_EC=$?
-        if [ $INIT_EC -eq 0 ]; then
+        set -e
+        if [ "$INIT_EC" -eq 0 ]; then
             echo "Demo initialization succeeded; starting Demo runtime."
             return 0
         fi
-        if [ $INIT_EC -eq $EXIT_NO_PASSABLE_CONFIG_RETRY ]; then
+        if [ "$INIT_EC" -eq "$EXIT_NO_PASSABLE_CONFIG_RETRY" ]; then
             echo "No passable config found; retrying initialization in $RETRY_SLEEP seconds"
-            if [ "$MAX_RETRIES" -gt 0 ] && [ $attempt -ge "$MAX_RETRIES" ]; then
+            if [ "$MAX_RETRIES" -gt 0 ] && [ "$attempt" -ge "$MAX_RETRIES" ]; then
                 echo "Max init retry attempts ($MAX_RETRIES) reached; stopping."
                 exit 1
             fi
@@ -86,25 +89,28 @@ run_init_until_success() {
             continue
         fi
         echo "Demo init failed (exit $INIT_EC); stopping."
-        exit $INIT_EC
+        exit "$INIT_EC"
     done
 }
 
 if [ "$AUTO_REINIT" = "1" ]; then
     # Full loop: init (with retries on 21) -> runtime; on runtime exit 20 re-init
+    # Must not let set -e trigger on runtime exit 20; we need to capture and handle it.
     while true; do
         run_init_until_success
+        set +e
         run_demo_runtime
         RUNTIME_EC=$?
-        if [ $RUNTIME_EC -eq 0 ]; then
+        set -e
+        if [ "$RUNTIME_EC" -eq 0 ]; then
             echo "Demo runtime exited normally; not restarting."
             exit 0
         fi
-        if [ $RUNTIME_EC -eq $EXIT_PROBATION_REINIT ]; then
+        if [ "$RUNTIME_EC" -eq "$EXIT_PROBATION_REINIT" ]; then
             echo "Demo runtime exited due to probation failure; re-initializing."
             continue
         fi
-        exit $RUNTIME_EC
+        exit "$RUNTIME_EC"
     done
 else
     # Single init (with retries on 21) + run once

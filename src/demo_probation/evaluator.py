@@ -290,7 +290,12 @@ def run_probation_fail_fast_check(db_path: str, config: Config) -> bool:
         int(time.time() * 1000), None, False, failure_reason_type=p_failure_type,
     )
     write_probation_status_artifact(config.artifacts_root, instance, payload)
-    log.warning("Demo probation fail-fast: failed (reason_type=%s) %s", p_failure_type or "timer_evaluated", p_reasons)
+    reason_str = "; ".join(p_reasons) if p_reasons else "unknown"
+    log.warning(
+        "Demo probation fail-fast: failed reason_type=%s reasons=%s",
+        p_failure_type or "timer_evaluated",
+        reason_str,
+    )
     append_demo_lifecycle_event(
         config.artifacts_root, getattr(config, "instance_name", None),
         "PROBATION", "failed",
