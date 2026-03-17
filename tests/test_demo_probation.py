@@ -705,6 +705,79 @@ def test_run_returns_none_when_no_reinit_requested(config_with_probation):
     assert rc is None
 
 
+def test_demo_runtime_guard_stops_on_bootstrap_without_probation_candidate_auto_reinit_true(demo_db, config_with_probation, monkeypatch):
+    """Bootstrap active config + no probation candidate + auto_reinit_after_failure=True -> guard stops runtime and sets _reinit_requested."""
+    from src.main import TradingBot
+    from src.config.config import EnvSettings
+    from src.config.versioning import register_config_version, activate_config_version
+
+    # Active bootstrap config
+    cfg = config_with_probation
+    cfg.database_path = demo_db
+    cfg.operating_mode = "demo_research"
+    cfg.demo_probation.enabled = True
+    cfg.demo_probation.auto_reinit_after_failure = True
+    ensure_stage3_schema(demo_db)
+    cid = register_config_version(
+        cfg,
+        version="bootstrap_test",
+        status="active",
+        description="Bootstrap test config",
+        source="bootstrap",
+        db_path=demo_db,
+    )
+    activate_config_version(cid, demo_db, reason="test_bootstrap_guard", manual=False)
+
+    # No active probation candidate
+    monkeypatch.setattr("src.demo_probation.store.get_current_probation_status", lambda db_path: None)
+
+    env = EnvSettings()
+    env.bybit_env = "demo"
+    bot = TradingBot(cfg, env)
+    bot._config_id = cid
+    bot.running = True
+    triggered = bot._enforce_demo_probation_guard()
+    assert triggered is True
+    assert bot.running is False
+    assert getattr(bot, "_reinit_requested", False) is True
+
+
+def test_demo_runtime_guard_does_not_set_reinit_when_auto_reinit_false(demo_db, config_with_probation, monkeypatch):
+    """Bootstrap active config + no probation candidate + auto_reinit_after_failure=False -> guard stops runtime without setting _reinit_requested."""
+    from src.main import TradingBot
+    from src.config.config import EnvSettings
+    from src.config.versioning import register_config_version, activate_config_version
+
+    cfg = config_with_probation
+    cfg.database_path = demo_db
+    cfg.operating_mode = "demo_research"
+    cfg.demo_probation.enabled = True
+    cfg.demo_probation.auto_reinit_after_failure = False
+    ensure_stage3_schema(demo_db)
+    cid = register_config_version(
+        cfg,
+        version="bootstrap_test",
+        status="active",
+        description="Bootstrap test config",
+        source="bootstrap",
+        db_path=demo_db,
+    )
+    activate_config_version(cid, demo_db, reason="test_bootstrap_guard", manual=False)
+
+    monkeypatch.setattr("src.demo_probation.store.get_current_probation_status", lambda db_path: None)
+
+    env = EnvSettings()
+    env.bybit_env = "demo"
+    bot = TradingBot(cfg, env)
+    bot._config_id = cid
+    bot.running = True
+    bot._reinit_requested = False
+    triggered = bot._enforce_demo_probation_guard()
+    assert triggered is True
+    assert bot.running is False
+    assert getattr(bot, "_reinit_requested", False) is False
+
+
 def test_demo_probation_auto_reinit_enabled_cli(tmp_path):
     """CLI demo probation auto-reinit-enabled exits 0 when true, 1 when false."""
     import subprocess

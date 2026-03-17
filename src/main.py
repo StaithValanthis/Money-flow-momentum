@@ -242,6 +242,51 @@ class TradingBot:
         log.info("Demo probation failed (stop_demo_on_failure=false); continuing")
         return False
 
+    def _enforce_demo_probation_guard(self) -> bool:
+        """
+        Demo-only runtime guard: when demo_probation is enabled and there is no active probation candidate,
+        do not continue trading on a bootstrap config. Returns True if guard triggered and runtime should stop.
+        """
+        try:
+            if get_effective_operating_mode(self.config, self.env) != OPERATING_MODE_DEMO_RESEARCH:
+                return False
+        except Exception:
+            return False
+        prob = getattr(self.config, "demo_probation", None)
+        if not prob or not getattr(prob, "enabled", False):
+            return False
+        if not self._config_id:
+            return False
+        try:
+            from src.demo_probation import get_current_probation_status
+            from src.config.versioning import get_config_version
+            from src.journal.logger import append_journal_event
+        except Exception:
+            return False
+        # If there is an active probation candidate for the current active config, allow runtime.
+        prob_status = get_current_probation_status(self.config.database_path)
+        if prob_status:
+            return False
+        # No active probation candidate; if active config source is bootstrap, stop runtime.
+        rec = get_config_version(self._config_id, self.config.database_path)
+        if not rec or rec.get("source") != "bootstrap":
+            return False
+        instance = getattr(self.config, "instance_name", None) or "demo"
+        log.warning("Demo runtime guard: bootstrap config active but no probation candidate; stopping runtime")
+        append_journal_event(
+            self.config.artifacts_root,
+            "RUNTIME_GUARD",
+            "bootstrap_no_probation_candidate",
+            instance=instance,
+            config_id=self._config_id,
+            reason="bootstrap active without probation candidate",
+        )
+        # When auto_reinit_after_failure is enabled, treat this like a probation failure re-init request.
+        if getattr(prob, "auto_reinit_after_failure", False):
+            self._reinit_requested = True
+        self.running = False
+        return True
+
     def _fetch_equity(self) -> float:
         try:
             r = self._client.get_wallet_balance(account_type="UNIFIED")
@@ -749,6 +794,11 @@ class TradingBot:
                                 break
                     except Exception as e:
                         log.debug("probation fail-fast check: %s", e)
+
+                    # Guard: when demo_probation is enabled, do not continue trading indefinitely on a bootstrap
+                    # config once there is no active probation candidate.
+                    if self._enforce_demo_probation_guard():
+                        break
 
                 symbols = self._universe.symbols
                 if not symbols:
