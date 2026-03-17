@@ -21,7 +21,13 @@ from src.config.versioning import (
     get_config_version,
     _config_from_artifact_yaml,
 )
+from src.demo_probation import (
+    get_current_probation_status,
+    get_probation_record,
+    LIFECYCLE_DEMO_PROBATION_FAILED,
+)
 from src.demo_probation.store import insert_probation_candidate
+from src.journal.logger import append_journal_event
 from src.lifecycle.logger import append_demo_lifecycle_event
 from src.storage.db import Database
 from src.storage.migrations import run_stage3_migrations
@@ -84,6 +90,53 @@ def is_warm_start_needed(
 
     trade_count = len(trades) if trades else 0
     if trade_count >= threshold:
+        # Normally we would skip warm-start when there is enough local Demo history, but Demo probation
+        # state can require a fresh candidate search even with many trades.
+        prob = getattr(config, "demo_probation", None)
+        if prob and getattr(prob, "enabled", False):
+            override_skip = False
+            try:
+                active_id = get_active_config_id(demo_db_path)
+            except Exception:
+                active_id = None
+            try:
+                prob_status = get_current_probation_status(demo_db_path)
+                rec = get_probation_record(active_id, demo_db_path) if active_id else None
+            except Exception:
+                prob_status = None
+                rec = None
+            source = None
+            if active_id:
+                try:
+                    cfg_rec = get_config_version(active_id, demo_db_path)
+                    source = (cfg_rec or {}).get("source")
+                except Exception:
+                    source = None
+            latest_failed = rec and rec.get("lifecycle_state") == LIFECYCLE_DEMO_PROBATION_FAILED
+            no_active_candidate = prob_status is None
+            # Override skip when probation has failed or there is no active candidate while running on bootstrap.
+            if latest_failed or (no_active_candidate and source == "bootstrap"):
+                override_skip = True
+            if override_skip:
+                log.info(
+                    "Warm-start skip overridden: probation failure or missing candidate requires fresh candidate search "
+                    "(reason=%s, trade_count=%s, source=%s)",
+                    f"sufficient_trades_{trade_count}",
+                    trade_count,
+                    source or "unknown",
+                )
+                try:
+                    append_journal_event(
+                        getattr(config, "artifacts_root", "artifacts"),
+                        "WARM_START",
+                        "skip_overridden_due_to_probation",
+                        instance=getattr(config, "instance_name", None) or "demo",
+                        reason="probation_failed_or_no_candidate_with_bootstrap",
+                        metrics={"trade_count": trade_count, "threshold": threshold, "source": source or "unknown"},
+                    )
+                except Exception:
+                    pass
+                return True, "probation_state_requires_fresh_search"
         return False, f"sufficient_trades_{trade_count}"
     if trade_count > 0:
         return True, f"insufficient_trades_{trade_count}_below_{threshold}"

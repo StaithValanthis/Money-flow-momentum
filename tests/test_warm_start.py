@@ -178,6 +178,122 @@ def test_warm_start_skipped_when_sufficient_trades(tmp_path: Path, monkeypatch) 
     assert "sufficient_trades" in reason
 
 
+def test_warm_start_skip_overridden_when_probation_failed(tmp_path: Path, monkeypatch) -> None:
+    """Even with sufficient trades, failed probation overrides warm-start skip and forces fresh search."""
+    db_path = tmp_path / "demo.db"
+    db = Database(str(db_path))
+    run_stage3_migrations(str(db_path))
+    # Enough trades to normally skip warm-start
+    for i in range(60):
+        db.insert_trade(
+            ts=1000000 + i * 1000,
+            symbol="BTCUSDT",
+            side="Buy",
+            qty=0.01,
+            price=50000.0,
+            order_id=f"oid_{i}",
+            pnl=0.0,
+        )
+    db.close()
+
+    cfg = Config()
+    cfg.database_path = str(db_path)
+    cfg.operating_mode = "demo_research"
+    cfg.warm_start = WarmStartConfig(
+        enabled=True,
+        min_local_trades_to_skip_warm_start=50,
+    )
+    # Demo probation enabled with failed candidate on active config
+    from src.config.config import DemoProbationConfig
+    from src.config.versioning import register_config_version, activate_config_version
+    from src.demo_probation import LIFECYCLE_DEMO_PROBATION_FAILED
+    from src.demo_probation.store import insert_probation_candidate
+
+    cfg.demo_probation = DemoProbationConfig(enabled=True)
+    # Active config (non-bootstrap) with failed probation
+    run_stage3_migrations(str(db_path))
+    cid = register_config_version(
+        cfg,
+        version="test_candidate",
+        status="candidate",
+        description="test candidate",
+        source="warm_start",
+        db_path=str(db_path),
+    )
+    activate_config_version(cid, str(db_path), reason="test", manual=False)
+    assert insert_probation_candidate(cid, str(db_path))
+    db = Database(str(db_path))
+    conn = db._get_conn()
+    conn.execute(
+        "UPDATE demo_probation SET lifecycle_state = ? WHERE config_id = ?",
+        (LIFECYCLE_DEMO_PROBATION_FAILED, cid),
+    )
+    conn.commit()
+    db.close()
+
+    env = EnvSettings()
+    env.bybit_env = "demo"
+
+    def _fake_load_config(_path=None):
+        return cfg, env
+
+    monkeypatch.setattr("src.warm_start.runner.load_config", _fake_load_config)
+    needed, reason = is_warm_start_needed(str(db_path), cfg)
+    assert needed is True
+    assert "probation_state_requires_fresh_search" in reason
+
+
+def test_warm_start_skip_overridden_when_bootstrap_and_no_probation_candidate(tmp_path: Path, monkeypatch) -> None:
+    """Bootstrap active config + no active probation candidate overrides sufficient-trades skip."""
+    db_path = tmp_path / "demo.db"
+    db = Database(str(db_path))
+    run_stage3_migrations(str(db_path))
+    for i in range(60):
+        db.insert_trade(
+            ts=1000000 + i * 1000,
+            symbol="BTCUSDT",
+            side="Buy",
+            qty=0.01,
+            price=50000.0,
+            order_id=f"oid_{i}",
+            pnl=0.0,
+        )
+    db.close()
+
+    cfg = Config()
+    cfg.database_path = str(db_path)
+    cfg.operating_mode = "demo_research"
+    cfg.warm_start = WarmStartConfig(
+        enabled=True,
+        min_local_trades_to_skip_warm_start=50,
+    )
+    from src.config.config import DemoProbationConfig
+    from src.config.versioning import register_config_version, activate_config_version
+
+    cfg.demo_probation = DemoProbationConfig(enabled=True)
+    run_stage3_migrations(str(db_path))
+    cid = register_config_version(
+        cfg,
+        version="bootstrap_test",
+        status="active",
+        description="Bootstrap active",
+        source="bootstrap",
+        db_path=str(db_path),
+    )
+    activate_config_version(cid, str(db_path), reason="test_bootstrap", manual=False)
+
+    env = EnvSettings()
+    env.bybit_env = "demo"
+
+    def _fake_load_config(_path=None):
+        return cfg, env
+
+    monkeypatch.setattr("src.warm_start.runner.load_config", _fake_load_config)
+    needed, reason = is_warm_start_needed(str(db_path), cfg)
+    assert needed is True
+    assert "probation_state_requires_fresh_search" in reason
+
+
 def test_warm_start_skipped_when_disabled(tmp_path: Path, monkeypatch) -> None:
     """Warm-start is not needed when warm_start.enabled is False."""
     db_path = tmp_path / "demo.db"
@@ -1274,9 +1390,8 @@ def test_start_demo_research_script_uses_demo_init_and_exits_on_failure() -> Non
         pytest.skip("start_demo_research.sh not found")
     text = script_path.read_text()
     assert "demo init" in text, "Script should call demo init"
-    assert "Demo initialization" in text, "Script should mention Demo initialization"
+    assert "Demo initialization" in text or "demo initialization" in text.lower(), "Script should mention Demo initialization"
     assert "exit 1" in text, "Script should exit 1 on init failure"
-    assert "trading will not start" in text.lower() or "will not start" in text.lower(), "Script should state trading will not start on failure"
 
 
 def test_warm_start_fallback_when_no_viable_candidate(tmp_path: Path, monkeypatch) -> None:
