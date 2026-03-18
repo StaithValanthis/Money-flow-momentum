@@ -37,6 +37,7 @@ def _warm_start_fingerprint(config: Config, symbols_sorted: Optional[List[str]] 
     for k in (
         "enabled", "search_until_viable", "batch_n_samples", "max_batches", "max_total_runtime_seconds",
         "require_profitable_seed", "require_viable_seed_before_trading", "allow_fallback_if_no_viable_seed",
+        "prioritize_protection_search", "protection_search_bias",
         "backtest_fee_bps", "backtest_slippage_bps",
         "min_replay_trade_count", "min_win_rate", "min_profit_factor", "min_payoff_ratio",
         "max_replay_drawdown", "min_median_trade_duration_sec", "ultra_short_duration_sec",

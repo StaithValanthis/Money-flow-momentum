@@ -54,9 +54,21 @@ class ParameterSpace:
         return out
 
 
-def get_bounded_space(stage4: bool = True, stage5: bool = True) -> ParameterSpace:
-    """Default bounded space for approved params only. stage4=True adds Stage 4 params; stage5=True adds Stage 5 params."""
-    bounds = {
+def get_bounded_space(
+    stage4: bool = True,
+    stage5: bool = True,
+    *,
+    prioritize_protection_search: bool = False,
+    protection_search_bias: str = "balanced",
+) -> ParameterSpace:
+    """
+    Bounded parameter space for approved params only.
+
+    When `prioritize_protection_search=True`, this function expands/reshapes the search space
+    to explicitly explore protection styles (Demo warm-start only). Live optimization behavior
+    is unchanged because warm-start controls this flag.
+    """
+    bounds: dict[str, tuple[float, float]] = {
         "entry.long_threshold": (1.0, 2.5),
         "entry.short_threshold": (-2.5, -1.0),
         "entry.min_delta_1m": (-0.5, 0.5),
@@ -70,6 +82,38 @@ def get_bounded_space(stage4: bool = True, stage5: bool = True) -> ParameterSpac
         "risk.risk_per_trade_pct": (0.2, 1.0),
     }
     discrete: dict[str, list[Any]] = {}
+
+    # Optional protection-aware bias (Demo warm-start only).
+    if prioritize_protection_search:
+        bias = protection_search_bias or "balanced"
+
+        # Bias SL/TP shapes.
+        if bias == "wider_stops":
+            bounds["stop_tp.atr_multiplier_sl"] = (1.3, 3.5)
+            bounds["stop_tp.tp1_r_multiple"] = (0.4, 1.2)
+            bounds["stop_tp.tp2_r_multiple"] = (1.0, 2.5)
+        elif bias == "faster_profit_taking":
+            bounds["stop_tp.atr_multiplier_sl"] = (0.9, 2.0)
+            bounds["stop_tp.tp1_r_multiple"] = (0.7, 2.0)
+            bounds["stop_tp.tp2_r_multiple"] = (1.5, 4.0)
+        elif bias == "longer_time_stop":
+            bounds["stop_tp.atr_multiplier_sl"] = (1.0, 3.0)
+            # keep TP multiples roughly balanced
+            bounds["stop_tp.tp1_r_multiple"] = (0.5, 1.5)
+            bounds["stop_tp.tp2_r_multiple"] = (1.0, 3.0)
+
+        # Expand time-stop + trailing. Candidate factory allows these keys, so this is safe.
+        if bias == "faster_profit_taking":
+            bounds["stop_tp.time_stop_bars"] = (20.0, 80.0)
+            bounds["stop_tp.trailing_stop_atr_multiple"] = (0.5, 1.5)
+        elif bias == "longer_time_stop":
+            bounds["stop_tp.time_stop_bars"] = (60.0, 240.0)
+            bounds["stop_tp.trailing_stop_atr_multiple"] = (0.8, 2.2)
+        else:
+            # balanced / wider_stops fallback
+            bounds["stop_tp.time_stop_bars"] = (30.0, 150.0)
+            bounds["stop_tp.trailing_stop_atr_multiple"] = (0.8, 2.0)
+
     if stage4:
         bounds.update({
             "entry.anti_chase_penalty": (0.0, 0.3),
@@ -89,6 +133,7 @@ def get_bounded_space(stage4: bool = True, stage5: bool = True) -> ParameterSpac
         discrete["stop_tp.exhaustion_exit_enabled"] = [True, False]
         discrete["stop_tp.failed_breakout_exit_enabled"] = [True, False]
         discrete["stop_tp.volatility_aware_time_stop"] = [True, False]
+
     if stage5:
         bounds.update({
             "risk.allocation_method": (0.0, 1.0),
@@ -100,4 +145,5 @@ def get_bounded_space(stage4: bool = True, stage5: bool = True) -> ParameterSpac
             "portfolio_exposure.same_direction_concentration_penalty_pct": (0.0, 25.0),
         })
         discrete["risk.allocation_method"] = ["equal_risk", "score_weighted", "capped_score_weighted", "cluster_aware"]
+
     return ParameterSpace(bounds=bounds, discrete=discrete)

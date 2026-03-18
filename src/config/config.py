@@ -386,6 +386,17 @@ class WarmStartConfig(BaseModel):
         description="When search exhausted with no viable seed: if True activate fallback; if False do not start trading",
     )
 
+    # Protection-aware candidate search (Demo-only)
+    prioritize_protection_search: bool = Field(
+        default=False,
+        description="If True, warm-start biases candidate sampling toward protection parameter exploration (SL/TP/time-stop/trailing).",
+    )
+    protection_search_bias: str = Field(
+        default="balanced",
+        pattern="^(balanced|wider_stops|faster_profit_taking|longer_time_stop)$",
+        description="Protection search bias style used when prioritize_protection_search=True.",
+    )
+
     # Outer init retry loop (Demo-only): retry demo init when no passable config found
     retry_init_until_passable: bool = Field(
         default=False,

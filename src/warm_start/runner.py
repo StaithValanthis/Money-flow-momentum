@@ -361,6 +361,8 @@ def run_warm_start_calibration(
         total_replayed = 0
         total_invalid = 0
         best_rejection_reason_seen: Optional[str] = None
+        # Small operator-friendly slice of the most promising rejected candidates.
+        top_rejected_candidates_all: list[dict[str, Any]] = []
         start_batch_index = 0
         symbols_sorted = sorted(candles_by_symbol.keys())
         cp = load_checkpoint(artifact_dir)
@@ -418,6 +420,23 @@ def run_warm_start_calibration(
                 result["total_candidates_replayed"] = total_replayed
                 result["candidates_invalid"] = total_invalid
                 continue
+
+            # Merge top rejected candidates across batches (dedupe by config_id).
+            try:
+                batch_top_rejected = search_meta.get("top_rejected_candidates") or []
+                if batch_top_rejected:
+                    top_rejected_candidates_all.extend(batch_top_rejected)
+                    dedup: dict[str, dict[str, Any]] = {}
+                    for tr in top_rejected_candidates_all:
+                        cid = tr.get("config_id")
+                        if cid:
+                            dedup[cid] = tr
+                    top_rejected_candidates_all = sorted(
+                        dedup.values(),
+                        key=lambda r: -(float(r.get("objective_score") or 0.0)),
+                    )[:5]
+            except Exception:
+                pass
             batch_requested = search_meta.get("candidate_count_requested", batch_n_samples)
             batch_replayed = search_meta.get("candidates_replayed", 0)
             batch_invalid = search_meta.get("candidates_invalid", 0)
@@ -435,6 +454,8 @@ def run_warm_start_calibration(
             if best is not None:
                 result["best_candidate_params_so_far"] = best.get("params")
                 result["best_candidate_metrics"] = best.get("oos_metrics")
+                result["best_candidate_protection_settings_so_far"] = best.get("protection_settings")
+                result["best_candidate_protection_diagnostic_so_far"] = best.get("protection_diagnostic")
 
             # Persist checkpoint after each batch so run can resume later
             result["candidates_invalid"] = total_invalid
@@ -478,6 +499,9 @@ def run_warm_start_calibration(
                     result["tp2_hit_rate"] = metrics.get("tp2_hit_rate")
                     result["exit_reason_counts"] = metrics.get("exit_reason_counts")
                     result["max_consecutive_losses"] = metrics.get("max_consecutive_losses")
+                    result["best_candidate_protection_settings"] = best.get("protection_settings")
+                    result["best_candidate_protection_diagnostic"] = best.get("protection_diagnostic")
+                    result["top_rejected_candidates"] = top_rejected_candidates_all
 
                     if accepted:
                         result["viable_seed_found"] = True
@@ -515,11 +539,29 @@ def run_warm_start_calibration(
                             result["candidate_count_evaluated"] = total_replayed
                             result["fallback_used"] = False
                             result["trade_count_synthetic"] = int((best.get("oos_metrics") or {}).get("trade_count") or 0)
+                            result["best_candidate_protection_settings"] = best.get("protection_settings")
+                            result["best_candidate_protection_diagnostic"] = best.get("protection_diagnostic")
+                            result["top_rejected_candidates"] = top_rejected_candidates_all
                             log.info("Warm-start final seed activated: config_id=%s", new_id)
                             append_demo_lifecycle_event(
                                 config.artifacts_root, getattr(config, "instance_name", None),
                                 "WARMUP", "passable_config_found", config_id=new_id,
                             )
+                            try:
+                                append_journal_event(
+                                    config.artifacts_root,
+                                    "WARMUP",
+                                    "protection_candidate_accepted",
+                                    instance=getattr(config, "instance_name", None) or "demo",
+                                    config_id=new_id,
+                                    status=best.get("protection_diagnostic"),
+                                    metrics={
+                                        "protection_settings": best.get("protection_settings") or {},
+                                    },
+                                    reason=best.get("protection_diagnostic") or "accepted",
+                                )
+                            except Exception:
+                                pass
                             _register_probation_candidate_if_enabled(config, new_id, demo_db_path)
                             result["checkpoint_cleared_reason"] = "viable_seed_found"
                             archive_checkpoint(artifact_dir)
@@ -542,6 +584,7 @@ def run_warm_start_calibration(
         result["search_exhausted"] = True
         result["viable_seed_found"] = False
         result["best_rejection_reason_seen"] = best_rejection_reason_seen
+        result["top_rejected_candidates"] = top_rejected_candidates_all
         result["elapsed_seconds"] = round(time.time() - calibration_start, 2)
         result["reason"] = "no_viable_seed_search_exhausted"
         result["engine"] = "parameter_aware_protection_backtest"
@@ -597,6 +640,7 @@ def run_warm_start_calibration(
         result["elapsed_seconds"] = search_meta.get("elapsed_seconds")
         if result["elapsed_seconds"] is None:
             result["elapsed_seconds"] = round(time.time() - calibration_start, 2)
+        result["top_rejected_candidates"] = search_meta.get("top_rejected_candidates") or []
         if best is not None:
             winning_config = build_config_from_params(baseline_config, best["params"])
             if winning_config:
@@ -637,6 +681,8 @@ def run_warm_start_calibration(
                     result["tp2_hit_rate"] = metrics.get("tp2_hit_rate")
                     result["exit_reason_counts"] = metrics.get("exit_reason_counts")
                     result["max_consecutive_losses"] = metrics.get("max_consecutive_losses")
+                    result["best_candidate_protection_settings"] = best.get("protection_settings")
+                    result["best_candidate_protection_diagnostic"] = best.get("protection_diagnostic")
                     result["candidate_count_evaluated"] = len(all_results)
                     result["engine"] = "parameter_aware_protection_backtest"
                     result["elapsed_seconds"] = round(time.time() - calibration_start, 2)
@@ -646,6 +692,21 @@ def run_warm_start_calibration(
                         config.artifacts_root, getattr(config, "instance_name", None),
                         "WARMUP", "passable_config_rejected", reason=rejection_reason or "acceptance_failed",
                     )
+                    try:
+                        append_journal_event(
+                            config.artifacts_root,
+                            "WARMUP",
+                            "protection_candidate_rejected",
+                            instance=getattr(config, "instance_name", None) or "demo",
+                            reason=rejection_reason or "acceptance_failed",
+                            status=best.get("protection_diagnostic"),
+                            metrics={
+                                "protection_settings": best.get("protection_settings") or {},
+                                "protection_diagnostic": best.get("protection_diagnostic"),
+                            },
+                        )
+                    except Exception:
+                        pass
                     if fallback:
                         log.info("Warm-start fallback: replay winner rejected; activating conservative seed")
                         _apply_fallback_seed(demo_db_path, config, artifact_dir, result)
@@ -707,6 +768,8 @@ def run_warm_start_calibration(
                     result["tp2_hit_rate"] = (best.get("oos_metrics") or {}).get("tp2_hit_rate")
                     result["exit_reason_counts"] = (best.get("oos_metrics") or {}).get("exit_reason_counts")
                     result["max_consecutive_losses"] = (best.get("oos_metrics") or {}).get("max_consecutive_losses")
+                    result["best_candidate_protection_settings"] = best.get("protection_settings")
+                    result["best_candidate_protection_diagnostic"] = best.get("protection_diagnostic")
                     if result.get("timeout_hit"):
                         result["reason"] = "warm_start_seeded_timeout_best_so_far"
                     result["viable_seed_found"] = True
@@ -715,6 +778,22 @@ def run_warm_start_calibration(
                         config.artifacts_root, getattr(config, "instance_name", None),
                         "WARMUP", "passable_config_found", config_id=new_id,
                     )
+                    try:
+                        append_journal_event(
+                            config.artifacts_root,
+                            "WARMUP",
+                            "protection_candidate_accepted",
+                            instance=getattr(config, "instance_name", None) or "demo",
+                            config_id=new_id,
+                            status=result.get("best_candidate_protection_diagnostic"),
+                            metrics={
+                                "protection_settings": result.get("best_candidate_protection_settings") or {},
+                                "protection_diagnostic": result.get("best_candidate_protection_diagnostic"),
+                            },
+                            reason=result.get("best_candidate_protection_diagnostic") or "accepted",
+                        )
+                    except Exception:
+                        pass
                     append_demo_lifecycle_event(
                         config.artifacts_root, getattr(config, "instance_name", None),
                         "DEMO_INIT", "init_complete_success", config_id=new_id,
