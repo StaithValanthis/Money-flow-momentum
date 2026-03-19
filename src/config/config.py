@@ -509,6 +509,26 @@ class DemoProbationConfig(BaseModel):
     fail_if_stalled_and_pf_below: float = Field(default=0.90, ge=0.0, le=2.0)
     auto_reinit_after_failure: bool = False
 
+    # After probation failure: flatten Demo exchange exposure before re-init (Demo-only; no effect on Live)
+    flatten_positions_on_failure: bool = Field(
+        default=True,
+        description="Close open linear positions on exchange when probation fails (demo_research + demo env only)",
+    )
+    cancel_open_orders_on_failure: bool = Field(
+        default=True,
+        description="Cancel all open linear orders when probation fails (demo_research + demo env only)",
+    )
+    require_flat_before_reinit: bool = Field(
+        default=True,
+        description="If true, do not signal auto-reinit until account is flat (or timeout with flatten disabled)",
+    )
+    flatten_timeout_seconds: int = Field(
+        default=30,
+        ge=5,
+        le=300,
+        description="Max seconds to wait for flat confirmation after flatten attempts",
+    )
+
 
 class LoggingConfig(BaseModel):
     """Logging settings."""

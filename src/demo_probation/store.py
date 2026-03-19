@@ -37,7 +37,7 @@ def insert_probation_candidate(config_id: str, db_path: str) -> bool:
         db.close()
         return True
     except Exception as e:
-        log.warning("insert_probation_candidate failed: %s", e)
+        log.warning("insert_probation_candidate failed: {}", e)
         return False
 
 
@@ -52,7 +52,7 @@ def get_probation_record(config_id: str, db_path: str) -> Optional[Dict[str, Any
             return None
         return dict(row)
     except Exception as e:
-        log.debug("get_probation_record: %s", e)
+        log.debug("get_probation_record: {}", e)
         return None
 
 
@@ -96,7 +96,7 @@ def update_probation_state(
         db.close()
         return True
     except Exception as e:
-        log.warning("update_probation_state failed: %s", e)
+        log.warning("update_probation_state failed: {}", e)
         return False
 
 

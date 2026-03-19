@@ -120,7 +120,11 @@ def run_warm_start_candidate_search(
         if max_runtime_seconds is not None and start_time is not None:
             elapsed = time.time() - start_time
             if elapsed >= max_runtime_seconds:
-                log.warning("Warm-start runtime budget reached (%.0fs); stopping after %d candidates", max_runtime_seconds, i)
+                log.warning(
+                    "Warm-start runtime budget reached ({}s); stopping after {} candidates",
+                    int(max_runtime_seconds),
+                    i,
+                )
                 timeout_hit = True
                 break
 
@@ -135,7 +139,7 @@ def run_warm_start_candidate_search(
             slippage_bps = float(getattr(warm, "backtest_slippage_bps", 2.0)) if warm else 2.0
             trades, metrics, replay_meta = run_backtest_on_candles(candidate_config, candles_by_symbol, fee_bps, slippage_bps)
         except Exception as e:
-            log.debug("Warm-start backtest candidate %s: %s", i, e)
+            log.debug("Warm-start backtest candidate {}: {}", i, e)
             candidates_invalid += 1
             continue
         trade_count = int(metrics.get("trade_count") or replay_meta.get("trade_count") or 0)

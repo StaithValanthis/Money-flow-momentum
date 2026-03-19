@@ -6,7 +6,10 @@ from typing import Callable, Optional
 
 from pybit.unified_trading import WebSocket
 
+from src.exchange.pybit_ws_ping_guard import install_pybit_ws_ping_guard
 from src.utils.logging import get_logger
+
+install_pybit_ws_ping_guard()
 
 log = get_logger(__name__)
 
@@ -77,12 +80,13 @@ class PublicWSShard:
     def stop(self) -> None:
         self._running = False
         if self._ws:
+            log.info("Public websocket shard {} stopping", self.shard_id)
             try:
                 self._ws.exit()
             except Exception:
                 pass
             self._ws = None
-        log.info(f"Public WS shard {self.shard_id} stopped")
+        log.info("Public websocket shard {} stopped", self.shard_id)
 
     def last_message_ts(self) -> int:
         return self._last_msg_ts

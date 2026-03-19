@@ -113,7 +113,7 @@ def append_demo_lifecycle_event(
             pass
         return log_path
     except Exception as e:
-        log.debug("append_demo_lifecycle_event: %s", e)
+        log.debug("append_demo_lifecycle_event: {}", e)
         return None
 
 
@@ -133,7 +133,7 @@ def write_human_log_line(
                 f.write(f"[{ts_iso}] {line}\n")
         return log_path
     except Exception as e:
-        log.debug("write_human_log_line: %s", e)
+        log.debug("write_human_log_line: {}", e)
         return None
 
 

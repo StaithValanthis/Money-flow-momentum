@@ -628,8 +628,8 @@ def test_probation_failure_log_message_when_stopping(config_with_probation):
         bot._stop_on_probation_failure()
     mock_warn.assert_called_once()
     call_args = mock_warn.call_args[0][0]
-    assert "Demo probation failed" in call_args
-    assert "stopping Demo runtime" in call_args
+    assert "probation failure" in call_args.lower()
+    assert "stopping" in call_args.lower()
 
 
 def test_auto_reinit_true_sets_reinit_requested(config_with_probation):
@@ -644,6 +644,98 @@ def test_auto_reinit_true_sets_reinit_requested(config_with_probation):
     bot.running = True
     bot._stop_on_probation_failure()
     assert getattr(bot, "_reinit_requested", False) is True
+
+
+def test_probation_failure_blocks_reinit_when_account_not_flat(config_with_probation):
+    """demo_research + demo: flatten failure blocks re-init."""
+    import types
+    from unittest.mock import Mock
+
+    from src.main import TradingBot
+    from src.config.config import EnvSettings
+
+    cfg = config_with_probation
+    cfg.operating_mode = "demo_research"
+    cfg.dry_run = False
+    cfg.demo_probation.stop_demo_on_failure = True
+    cfg.demo_probation.auto_reinit_after_failure = True
+
+    env = EnvSettings()
+    env.bybit_env = "demo"
+    bot = TradingBot(cfg, env)
+    bot.running = True
+    bot._client = Mock()
+    bot._executor = Mock()
+
+    def fail_flatten(self):
+        return False
+
+    bot._demo_run_probation_failure_flatten = types.MethodType(fail_flatten, bot)
+    bot._stop_on_probation_failure()
+    assert bot._reinit_requested is False
+    assert bot._probation_reinit_blocked_reason == "not_flat"
+
+
+def test_probation_failure_reinit_when_flatten_succeeds(config_with_probation):
+    """When flatten reports success, re-init is allowed."""
+    import types
+    from unittest.mock import Mock
+
+    from src.main import TradingBot
+    from src.config.config import EnvSettings
+
+    cfg = config_with_probation
+    cfg.operating_mode = "demo_research"
+    cfg.dry_run = False
+    cfg.demo_probation.stop_demo_on_failure = True
+    cfg.demo_probation.auto_reinit_after_failure = True
+
+    env = EnvSettings()
+    env.bybit_env = "demo"
+    bot = TradingBot(cfg, env)
+    bot._client = Mock()
+    bot._executor = Mock()
+
+    def ok_flatten(self):
+        return True
+
+    bot._demo_run_probation_failure_flatten = types.MethodType(ok_flatten, bot)
+    bot._stop_on_probation_failure()
+    assert bot._reinit_requested is True
+
+
+def test_demo_run_probation_failure_flatten_cancels_orders_and_closes_positions(config_with_probation):
+    """_demo_run_probation_failure_flatten calls cancel_all and emergency_flatten when positions exist."""
+    from unittest.mock import Mock
+
+    from src.main import TradingBot
+    from src.config.config import EnvSettings
+
+    cfg = config_with_probation
+    cfg.operating_mode = "demo_research"
+    cfg.dry_run = False
+    cfg.demo_probation.flatten_timeout_seconds = 10
+
+    env = EnvSettings()
+    env.bybit_env = "demo"
+    bot = TradingBot(cfg, env)
+    bot._client = Mock()
+    bot._client.cancel_all_open_orders = Mock(return_value={"retCode": 0})
+    n = [0]
+
+    def gp(*_a, **_k):
+        n[0] += 1
+        if n[0] <= 1:
+            return {"result": {"list": [{"symbol": "BTCUSDT", "size": "0.01"}]}}
+        return {"result": {"list": []}}
+
+    bot._client.get_positions = gp
+    bot._executor = Mock()
+    bot._executor.emergency_flatten = Mock(return_value={"BTCUSDT": True})
+
+    assert bot._demo_run_probation_failure_flatten() is True
+    bot._client.cancel_all_open_orders.assert_called_once()
+    bot._executor.emergency_flatten.assert_called_once()
 
 
 def test_auto_reinit_false_does_not_set_reinit_requested(config_with_probation):

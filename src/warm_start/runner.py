@@ -119,8 +119,7 @@ def is_warm_start_needed(
                 override_skip = True
             if override_skip:
                 log.info(
-                    "Warm-start skip overridden: probation failure or missing candidate requires fresh candidate search "
-                    "(reason=%s, trade_count=%s, source=%s)",
+                    "Warm-start skip overridden: reason={} trade_count={} source={} (fresh candidate search required)",
                     f"sufficient_trades_{trade_count}",
                     trade_count,
                     source or "unknown",
@@ -293,7 +292,7 @@ def run_warm_start_calibration(
             return result
         client = BybitClient(api_key=api_key, api_secret=api_secret, demo=True)
         symbols = _get_symbols_for_warm_start(config, client)
-        log.info("Warm-start universe resolved: %d symbols", len(symbols))
+        log.info("Warm-start universe resolved: {} symbols", len(symbols))
     except Exception as e:
         log.exception("Warm-start client/symbols")
         result["error"] = str(e)
@@ -322,9 +321,9 @@ def run_warm_start_calibration(
                 log.debug(f"Fetch klines {symbol}: {e}")
         if candles_by_symbol:
             save_candles_cache(config.artifacts_root, candles_by_symbol)
-            log.info("Warm-start candles fetched: %d symbols", len(candles_by_symbol))
+            log.info("Warm-start candles fetched: {} symbols", len(candles_by_symbol))
     if candles_by_symbol:
-        log.info("Warm-start candles ready: %d symbols", len(candles_by_symbol))
+        log.info("Warm-start candles ready: {} symbols", len(candles_by_symbol))
 
     if not candles_by_symbol:
         result["reason"] = "no_candle_data"
@@ -395,10 +394,20 @@ def run_warm_start_calibration(
         for batch_num in range(start_batch_index, max_batches):
             elapsed = time.time() - calibration_start
             if elapsed >= max_total_runtime_seconds:
-                log.info("Warm-start total runtime budget reached (%.0fs); stopping after %d batches", max_total_runtime_seconds, batch_num)
+                log.info(
+                    "Warm-start total runtime budget reached ({}s); stopping after {} batches",
+                    int(max_total_runtime_seconds),
+                    batch_num,
+                )
                 break
             remaining = max(60, int(max_total_runtime_seconds - elapsed))
-            log.info("Warm-start batch %d/%d (n_samples=%s, remaining_runtime=%ss)", batch_num + 1, max_batches, batch_n_samples, remaining)
+            log.info(
+                "Warm-start batch {}/{} (n_samples={}, remaining_runtime={}s)",
+                batch_num + 1,
+                max_batches,
+                batch_n_samples,
+                remaining,
+            )
             try:
                 best, all_results, search_meta = run_warm_start_candidate_search(
                     baseline_config,
@@ -410,7 +419,7 @@ def run_warm_start_calibration(
                     start_time=calibration_start,
                 )
             except Exception as e:
-                log.warning("Warm-start batch %d failed: %s", batch_num + 1, e)
+                log.warning("Warm-start batch {} failed: {}", batch_num + 1, e)
                 result["error"] = str(e)
                 total_invalid += batch_n_samples
                 total_requested += batch_n_samples
@@ -472,7 +481,7 @@ def run_warm_start_calibration(
                         winner_trades, _, _ = run_backtest_on_candles(winning_config, candles_by_symbol, fee_bps, slip_bps)
                         durations_sec = get_trade_durations_sec(winner_trades)
                     except Exception as e:
-                        log.warning("Warm-start re-backtest for acceptance failed: %s", e)
+                        log.warning("Warm-start re-backtest for acceptance failed: {}", e)
                         durations_sec = []
                     metrics = best.get("oos_metrics") or {}
                     accepted, rejection_reason, acceptance_checks = passes_warm_start_seed_acceptance(
@@ -542,7 +551,7 @@ def run_warm_start_calibration(
                             result["best_candidate_protection_settings"] = best.get("protection_settings")
                             result["best_candidate_protection_diagnostic"] = best.get("protection_diagnostic")
                             result["top_rejected_candidates"] = top_rejected_candidates_all
-                            log.info("Warm-start final seed activated: config_id=%s", new_id)
+                            log.info("Warm-start final seed activated: config_id={}", new_id)
                             append_demo_lifecycle_event(
                                 config.artifacts_root, getattr(config, "instance_name", None),
                                 "WARMUP", "passable_config_found", config_id=new_id,
@@ -572,7 +581,11 @@ def run_warm_start_calibration(
                             )
                             return result
                     else:
-                        log.info("Warm-start batch %d winner rejected by acceptance: %s", batch_num + 1, rejection_reason)
+                        log.info(
+                            "Warm-start batch {} winner rejected by acceptance: {}",
+                            batch_num + 1,
+                            rejection_reason,
+                        )
                         append_demo_lifecycle_event(
                             config.artifacts_root, getattr(config, "instance_name", None),
                             "WARMUP", "passable_config_rejected", reason=rejection_reason or "acceptance_failed",
@@ -601,7 +614,10 @@ def run_warm_start_calibration(
                 "DEMO_INIT", "no_passable_config_found",
             )
         else:
-            log.info("Warm-start search exhausted after %d batches; no viable seed", result["batches_completed"])
+            log.info(
+                "Warm-start search exhausted after {} batches; no viable seed",
+                result["batches_completed"],
+            )
         if allow_fallback_if_no_viable_seed:
             log.info("Warm-start fallback: search exhausted without viable seed; activating conservative seed")
             _apply_fallback_seed(demo_db_path, config, artifact_dir, result)
@@ -620,7 +636,11 @@ def run_warm_start_calibration(
     # --- Single-batch path (search_until_viable=False): parameter-aware replay ---
     n_samples_use = n_samples
     max_runtime_use = max_runtime_seconds
-    log.info("Warm-start candidate search started (n_samples=%s, max_runtime_seconds=%s)", n_samples_use, max_runtime_use)
+    log.info(
+        "Warm-start candidate search started (n_samples={}, max_runtime_seconds={})",
+        n_samples_use,
+        max_runtime_use,
+    )
     try:
         best, all_results, search_meta = run_warm_start_candidate_search(
             baseline_config,
@@ -653,7 +673,7 @@ def run_warm_start_calibration(
                     winner_trades, _, _ = run_backtest_on_candles(winning_config, candles_by_symbol, fee_bps, slip_bps)
                     durations_sec = get_trade_durations_sec(winner_trades)
                 except Exception as e:
-                    log.warning("Warm-start re-backtest for acceptance failed: %s", e)
+                    log.warning("Warm-start re-backtest for acceptance failed: {}", e)
                     durations_sec = []
                 metrics = best.get("oos_metrics") or {}
                 accepted, rejection_reason, acceptance_checks = passes_warm_start_seed_acceptance(
@@ -687,7 +707,10 @@ def run_warm_start_calibration(
                     result["engine"] = "parameter_aware_protection_backtest"
                     result["elapsed_seconds"] = round(time.time() - calibration_start, 2)
                     result["viable_seed_found"] = False
-                    log.info("Warm-start replay winner rejected by seed acceptance: %s", rejection_reason)
+                    log.info(
+                        "Warm-start replay winner rejected by seed acceptance: {}",
+                        rejection_reason,
+                    )
                     append_demo_lifecycle_event(
                         config.artifacts_root, getattr(config, "instance_name", None),
                         "WARMUP", "passable_config_rejected", reason=rejection_reason or "acceptance_failed",
@@ -773,7 +796,7 @@ def run_warm_start_calibration(
                     if result.get("timeout_hit"):
                         result["reason"] = "warm_start_seeded_timeout_best_so_far"
                     result["viable_seed_found"] = True
-                    log.info("Warm-start final seed activated: config_id=%s", new_id)
+                    log.info("Warm-start final seed activated: config_id={}", new_id)
                     append_demo_lifecycle_event(
                         config.artifacts_root, getattr(config, "instance_name", None),
                         "WARMUP", "passable_config_found", config_id=new_id,
@@ -801,7 +824,10 @@ def run_warm_start_calibration(
                     _write_warm_start_artifact(artifact_dir, result, config)
                     return result
     except Exception as e:
-        log.warning("Parameter-aware warm-start failed, falling back to single-replay path: %s", e)
+        log.warning(
+            "Parameter-aware warm-start failed, falling back to single-replay path: {}",
+            e,
+        )
         result["error"] = str(e)
         result["reason"] = "parameter_aware_failed_fallback"
 
@@ -925,7 +951,10 @@ def run_warm_start_calibration(
                 result["reason"] = "seed_rejected_by_acceptance"
                 result["best_candidate_metrics"] = metrics
                 result["elapsed_seconds"] = round(time.time() - calibration_start, 2)
-                log.info("Warm-start legacy path: optimizer winner rejected by seed acceptance: %s", rejection_reason)
+                log.info(
+                    "Warm-start legacy path: optimizer winner rejected by seed acceptance: {}",
+                    rejection_reason,
+                )
                 append_demo_lifecycle_event(
                     config.artifacts_root, getattr(config, "instance_name", None),
                     "WARMUP", "passable_config_rejected", reason=rejection_reason or "acceptance_failed",
@@ -1010,7 +1039,10 @@ def run_warm_start_calibration(
 
     result["elapsed_seconds"] = round(time.time() - calibration_start, 2)
     if fallback:
-        log.info("Warm-start fallback: no acceptable candidate; activating conservative seed (reason=%s)", result.get("reason"))
+        log.info(
+            "Warm-start fallback: no acceptable candidate; activating conservative seed (reason={})",
+            result.get("reason"),
+        )
         _apply_fallback_seed(demo_db_path, config, artifact_dir, result)
     return result
 def run_demo_init(
@@ -1067,7 +1099,7 @@ def _register_probation_candidate_if_enabled(config: Config, seed_config_id: str
     if not getattr(prob, "allow_demo_trading_with_probation_candidate", True):
         return
     if insert_probation_candidate(seed_config_id, demo_db_path):
-        log.info("Demo probation candidate registered: config_id=%s", seed_config_id)
+        log.info("Demo probation candidate registered: config_id={}", seed_config_id)
         append_demo_lifecycle_event(
             config.artifacts_root, getattr(config, "instance_name", None),
             "PROBATION", "candidate_registered", config_id=seed_config_id,

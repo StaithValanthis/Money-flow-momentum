@@ -69,7 +69,7 @@ def load_checkpoint(artifact_dir: Path) -> Optional[Dict[str, Any]]:
             return None
         return data
     except Exception as e:
-        log.warning("Warm-start checkpoint load failed: %s", e)
+        log.warning("Warm-start checkpoint load failed: {}", e)
         return None
 
 
@@ -81,7 +81,7 @@ def save_checkpoint(artifact_dir: Path, payload: Dict[str, Any]) -> None:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2, default=str)
     except Exception as e:
-        log.warning("Warm-start checkpoint save failed: %s", e)
+        log.warning("Warm-start checkpoint save failed: {}", e)
 
 
 def checkpoint_matches(
@@ -105,7 +105,7 @@ def clear_checkpoint(artifact_dir: Path) -> None:
             path.unlink()
             log.info("Warm-start checkpoint cleared")
         except Exception as e:
-            log.warning("Warm-start checkpoint clear failed: %s", e)
+            log.warning("Warm-start checkpoint clear failed: {}", e)
 
 
 def archive_checkpoint(artifact_dir: Path) -> None:
@@ -118,9 +118,9 @@ def archive_checkpoint(artifact_dir: Path) -> None:
         archive_name = f"{ARCHIVE_PREFIX}{ts}.json"
         archive_path = path.parent / archive_name
         path.rename(archive_path)
-        log.info("Warm-start checkpoint archived to %s", archive_path.name)
+        log.info("Warm-start checkpoint archived to {}", archive_path.name)
     except Exception as e:
-        log.warning("Warm-start checkpoint archive failed: %s", e)
+        log.warning("Warm-start checkpoint archive failed: {}", e)
 
 
 def build_checkpoint_payload(

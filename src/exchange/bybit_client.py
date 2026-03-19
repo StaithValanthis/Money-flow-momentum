@@ -8,7 +8,10 @@ from loguru import logger
 from pybit.unified_trading import HTTP, WebSocket
 
 from src.config.config import ExchangeConfig, EnvSettings
+from src.exchange.pybit_ws_ping_guard import install_pybit_ws_ping_guard
 from src.utils.logging import get_logger
+
+install_pybit_ws_ping_guard()
 
 log = get_logger(__name__)
 
@@ -297,6 +300,15 @@ class BybitClient:
             return self.http.get_positions(**params)
         return self._retry_rest(_call)
 
+    def cancel_all_open_orders(self, category: str = "linear", settle_coin: str = "USDT") -> dict:
+        """Cancel all open orders for linear USDT perps (demo or live account)."""
+        def _call():
+            return self.http.cancel_all_orders(
+                category=category,
+                settleCoin=settle_coin,
+            )
+        return self._retry_rest(_call)
+
     def get_wallet_balance(self, account_type: str = "UNIFIED") -> dict:
         """Get wallet balance."""
         def _call():
@@ -401,6 +413,7 @@ class BybitClient:
     def stop_public_ws(self) -> None:
         """Stop public WebSocket."""
         if self._ws_public:
+            log.info("Stopping exchange public websocket")
             try:
                 self._ws_public.exit()
             except Exception:
@@ -410,6 +423,7 @@ class BybitClient:
     def stop_private_ws(self) -> None:
         """Stop private WebSocket."""
         if self._ws_private:
+            log.info("Stopping exchange private websocket")
             try:
                 self._ws_private.exit()
             except Exception:

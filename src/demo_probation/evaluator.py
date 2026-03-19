@@ -254,7 +254,7 @@ def apply_probation_result(
             from src.config.versioning import reject_config_version
             reject_config_version(config_id, db_path)
         except Exception as e:
-            log.warning("auto_reject after probation failure: %s", e)
+            log.warning("auto_reject after probation failure: {}", e)
 
     return True
 
@@ -292,7 +292,7 @@ def run_probation_fail_fast_check(db_path: str, config: Config) -> bool:
     write_probation_status_artifact(config.artifacts_root, instance, payload)
     reason_str = "; ".join(p_reasons) if p_reasons else "unknown"
     log.warning(
-        "Demo probation fail-fast: failed reason_type=%s reasons=%s",
+        "Demo probation fail-fast: failed reason_type={} reasons={}",
         p_failure_type or "timer_evaluated",
         reason_str,
     )

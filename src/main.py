@@ -78,6 +78,7 @@ class TradingBot:
         self._last_heartbeat_write_ts: float = 0.0
         self._effective_api_key: str = ""  # set in _init_components; never log
         self._reinit_requested: bool = False  # set when probation failed + auto_reinit_after_failure (Demo-only)
+        self._probation_reinit_blocked_reason: Optional[str] = None  # e.g. not_flat after flatten timeout
 
     def _init_components(self) -> None:
         env_type = get_bybit_env(self.env)
@@ -207,7 +208,7 @@ class TradingBot:
             symbol = data.get("symbol", "")
             side = data.get("side", "")
             if not symbol:
-                log.debug("Execution missing symbol and order not in recon; skip trade persist order_id=%s", order_id)
+                log.debug("Execution missing symbol and order not in recon; skip trade persist order_id={}", order_id)
                 return
             link = data.get("orderLinkId", "") or ""
 
@@ -222,25 +223,165 @@ class TradingBot:
                 if run_probation_fail_fast_check(self.config.database_path, self.config):
                     self._stop_on_probation_failure()
             except Exception as e:
-                log.debug("probation fail-fast check: %s", e)
+                log.debug("probation fail-fast check: {}", e)
         except Exception as e:
-            log.debug("insert_fill/insert_trade: %s", e)
+            log.debug("insert_fill/insert_trade: {}", e)
+
+    def _demo_flatten_policy_applies(self) -> bool:
+        """True when Demo exchange flatten/cancel/flat-check should run (demo_research + demo API, not dry_run)."""
+        if get_effective_operating_mode(self.config, self.env) != OPERATING_MODE_DEMO_RESEARCH:
+            return False
+        if get_bybit_env(self.env) != "demo":
+            return False
+        if self.config.dry_run:
+            return False
+        prob = getattr(self.config, "demo_probation", None)
+        if not prob or not getattr(prob, "enabled", False):
+            return False
+        return True
+
+    def _demo_linear_nonzero_positions(self) -> list[dict]:
+        """Open linear positions with non-zero size from exchange REST."""
+        r = self._client.get_positions("linear")
+        out: list[dict] = []
+        for row in (r.get("result") or {}).get("list") or []:
+            sym = row.get("symbol") or ""
+            sz = float(row.get("size") or 0)
+            if sym and abs(sz) > 1e-12:
+                out.append({"symbol": sym, "size": sz})
+        return out
+
+    def _demo_account_is_flat(self) -> bool:
+        try:
+            return len(self._demo_linear_nonzero_positions()) == 0
+        except Exception as e:
+            log.warning("Could not verify Demo account flat state: {}", e)
+            return False
+
+    def _demo_run_probation_failure_flatten(self) -> bool:
+        """
+        Cancel orders / flatten positions on Demo exchange; wait up to flatten_timeout_seconds.
+        Returns False if require_flat_before_reinit and account still not flat (re-init must not proceed).
+        """
+        from src.journal.logger import append_journal_event
+
+        prob = getattr(self.config, "demo_probation", None)
+        if not prob:
+            return True
+        instance = getattr(self.config, "instance_name", None) or "demo"
+        art = self.config.artifacts_root
+        timeout = int(getattr(prob, "flatten_timeout_seconds", 30) or 30)
+
+        append_journal_event(
+            art, "RISK", "flatten_on_probation_failure_started", instance=instance,
+        )
+        log.info("Demo probation failure: flatten policy started (timeout={}s)", timeout)
+
+        if getattr(prob, "cancel_open_orders_on_failure", True):
+            try:
+                res = self._client.cancel_all_open_orders()
+                if res.get("retCode") == 0:
+                    log.info("Demo probation failure: open orders cancelled on exchange")
+                    append_journal_event(art, "RISK", "open_orders_cancelled", instance=instance)
+                else:
+                    log.warning(
+                        "Demo probation failure: cancel_all_orders retCode={} retMsg={}",
+                        res.get("retCode"),
+                        res.get("retMsg"),
+                    )
+            except Exception as e:
+                log.warning("Demo probation failure: cancel open orders failed: {}", e)
+
+        if getattr(prob, "flatten_positions_on_failure", True):
+            try:
+                pos = self._demo_linear_nonzero_positions()
+                if pos:
+                    results = self._executor.emergency_flatten(
+                        [{"symbol": p["symbol"], "size": p["size"]} for p in pos]
+                    )
+                    log.info("Demo probation failure: market-close attempts per symbol: {}", results)
+            except Exception as e:
+                log.warning("Demo probation failure: position flatten error: {}", e)
+
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self._demo_account_is_flat():
+                log.info("Demo probation failure: account flat confirmed; safe to stop / re-init")
+                append_journal_event(art, "RISK", "positions_flattened", instance=instance)
+                return True
+            time.sleep(1.5)
+
+        if self._demo_account_is_flat():
+            append_journal_event(art, "RISK", "positions_flattened", instance=instance)
+            return True
+
+        if getattr(prob, "require_flat_before_reinit", True):
+            log.error(
+                "Demo account is NOT flat after probation failure cleanup (timeout={}s). "
+                "Re-init blocked until flat. Close positions manually or increase demo_probation.flatten_timeout_seconds.",
+                timeout,
+            )
+            append_journal_event(
+                art,
+                "RISK",
+                "flatten_failed_reinit_blocked",
+                instance=instance,
+                reason="account_not_flat",
+            )
+            return False
+
+        log.warning(
+            "Demo account not flat after timeout but require_flat_before_reinit=false; continuing stop flow"
+        )
+        return True
 
     def _stop_on_probation_failure(self) -> bool:
-        """If stop_demo_on_failure is True, log and set self.running = False. Demo-only. Returns True if stopped."""
+        """If stop_demo_on_failure is True, flatten Demo exposure when configured, then stop. Demo-only."""
         prob = getattr(self.config, "demo_probation", None)
         stop = getattr(prob, "stop_demo_on_failure", True)
-        if stop:
-            reinit = getattr(prob, "auto_reinit_after_failure", False)
+        if not stop:
+            log.info("Demo probation failed (stop_demo_on_failure=false); continuing")
+            return False
+
+        self._probation_reinit_blocked_reason = None
+        reinit = getattr(prob, "auto_reinit_after_failure", False)
+
+        if (
+            self._demo_flatten_policy_applies()
+            and self._client
+            and self._executor
+            and (
+                getattr(prob, "flatten_positions_on_failure", True)
+                or getattr(prob, "cancel_open_orders_on_failure", True)
+                or getattr(prob, "require_flat_before_reinit", True)
+            )
+        ):
+            flat_ok = self._demo_run_probation_failure_flatten()
             if reinit:
-                log.warning("Demo probation failed; stopping Demo runtime (re-init requested)")
+                self._reinit_requested = bool(flat_ok)
+                if not flat_ok:
+                    self._probation_reinit_blocked_reason = "not_flat"
+            else:
+                self._reinit_requested = False
+        else:
+            if reinit:
                 self._reinit_requested = True
             else:
-                log.warning("Demo probation failed; stopping Demo runtime")
-            self.running = False
-            return True
-        log.info("Demo probation failed (stop_demo_on_failure=false); continuing")
-        return False
+                self._reinit_requested = False
+
+        if reinit and self._reinit_requested:
+            log.warning(
+                "Demo runtime exiting due to probation failure; re-initializing after stop (account flat)"
+            )
+        elif reinit and not self._reinit_requested:
+            log.error(
+                "Demo runtime exiting due to probation failure; re-init BLOCKED (account not flat)"
+            )
+        else:
+            log.warning("Demo runtime exiting due to probation failure; stopping")
+
+        self.running = False
+        return True
 
     def _enforce_demo_probation_guard(self) -> bool:
         """
@@ -272,7 +413,9 @@ class TradingBot:
         if not rec or rec.get("source") != "bootstrap":
             return False
         instance = getattr(self.config, "instance_name", None) or "demo"
-        log.warning("Demo runtime guard: bootstrap config active but no probation candidate; stopping runtime")
+        log.warning(
+            "Demo runtime guard triggered: bootstrap config active with no probation candidate; stopping runtime"
+        )
         append_journal_event(
             self.config.artifacts_root,
             "RUNTIME_GUARD",
@@ -281,9 +424,30 @@ class TradingBot:
             config_id=self._config_id,
             reason="bootstrap active without probation candidate",
         )
-        # When auto_reinit_after_failure is enabled, treat this like a probation failure re-init request.
+        # When auto_reinit_after_failure is enabled, flatten before allowing re-init (same as probation failure).
+        self._probation_reinit_blocked_reason = None
         if getattr(prob, "auto_reinit_after_failure", False):
-            self._reinit_requested = True
+            if (
+                self._demo_flatten_policy_applies()
+                and self._client
+                and self._executor
+                and (
+                    getattr(prob, "flatten_positions_on_failure", True)
+                    or getattr(prob, "cancel_open_orders_on_failure", True)
+                    or getattr(prob, "require_flat_before_reinit", True)
+                )
+            ):
+                flat_ok = self._demo_run_probation_failure_flatten()
+                self._reinit_requested = bool(flat_ok)
+                if not flat_ok:
+                    self._probation_reinit_blocked_reason = "not_flat"
+                    log.error(
+                        "Demo runtime guard: re-init blocked — account not flat after cleanup"
+                    )
+            else:
+                self._reinit_requested = True
+        else:
+            self._reinit_requested = False
         self.running = False
         return True
 
@@ -793,7 +957,7 @@ class TradingBot:
                             if self._stop_on_probation_failure():
                                 break
                     except Exception as e:
-                        log.debug("probation fail-fast check: %s", e)
+                        log.debug("probation fail-fast check: {}", e)
 
                     # Guard: when demo_probation is enabled, do not continue trading indefinitely on a bootstrap
                     # config once there is no active probation candidate.
@@ -815,7 +979,7 @@ class TradingBot:
                         from src.demo_probation import run_probation_fail_fast_check
                         run_probation_fail_fast_check(self.config.database_path, self.config)
                     except Exception as e:
-                        log.debug("probation fail-fast check: %s", e)
+                        log.debug("probation fail-fast check: {}", e)
                     self._stop_on_probation_failure()
                     break
                 ok, reason = self._risk.check_daily_realized_loss()
@@ -826,7 +990,7 @@ class TradingBot:
                         from src.demo_probation import run_probation_fail_fast_check
                         run_probation_fail_fast_check(self.config.database_path, self.config)
                     except Exception as e:
-                        log.debug("probation fail-fast check: %s", e)
+                        log.debug("probation fail-fast check: {}", e)
                     self._stop_on_probation_failure()
                     break
 
@@ -1210,6 +1374,7 @@ class TradingBot:
         """Run the trading loop. Returns exit code 20 when Demo probation failed and auto_reinit_after_failure is True, else None (caller should exit 0)."""
         self.running = True
         self._reinit_requested = False
+        self._probation_reinit_blocked_reason = None
         if not self._boot():
             return None
         if get_effective_operating_mode(self.config, self.env) == OPERATING_MODE_DEMO_RESEARCH:
@@ -1234,12 +1399,19 @@ class TradingBot:
             self._score_and_enter_loop()
         finally:
             self.running = False
+            log.info("Demo runtime stopping; closing connections")
             if get_effective_operating_mode(self.config, self.env) == OPERATING_MODE_DEMO_RESEARCH:
                 append_demo_lifecycle_event(
                     self.config.artifacts_root, getattr(self.config, "instance_name", None),
                     "RUNTIME", "runtime_stopped",
                 )
-                if getattr(self, "_reinit_requested", False):
+                if getattr(self, "_probation_reinit_blocked_reason", None):
+                    append_demo_lifecycle_event(
+                        self.config.artifacts_root, getattr(self.config, "instance_name", None),
+                        "AUTO_REINIT", "reinit_blocked_account_not_flat",
+                        reason="flatten_failed_or_timeout",
+                    )
+                elif getattr(self, "_reinit_requested", False):
                     append_demo_lifecycle_event(
                         self.config.artifacts_root, getattr(self.config, "instance_name", None),
                         "RUNTIME", "runtime_exited_probation_failure",
@@ -1264,6 +1436,10 @@ class TradingBot:
                     status="degraded" if kill else "normal",
                 )
             if self._ws_shards:
+                log.info(
+                    "Public websocket shards stopping ({} shard(s))",
+                    len(self._ws_shards._shards),
+                )
                 self._ws_shards.stop_all()
             self._client.stop_private_ws()
             self._client.stop_public_ws()

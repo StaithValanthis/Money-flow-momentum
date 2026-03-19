@@ -106,7 +106,7 @@ def append_journal_event(
                     f.write(json.dumps(payload, default=str) + "\n")
         return log_path
     except Exception as e:
-        log.debug("append_journal_event: %s", e)
+        log.debug("append_journal_event: {}", e)
         return None
 
 
@@ -122,7 +122,7 @@ def write_journal_line(artifacts_root: str, line: str) -> Optional[Path]:
                 f.write(f"[{ts_iso}] {line}\n")
         return log_path
     except Exception as e:
-        log.debug("write_journal_line: %s", e)
+        log.debug("write_journal_line: {}", e)
         return None
 
 
