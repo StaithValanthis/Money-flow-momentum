@@ -36,6 +36,77 @@ FAILURE_REASON_FAIL_FAST_STALLED_POOR_METRICS = "fail_fast_stalled_poor_metrics"
 ULTRA_SHORT_DURATION_SEC = 60.0
 
 
+def _probation_composite_survival(
+    closed: List[dict],
+    pf: float,
+    exp: float,
+    cons_losses: int,
+    stop_out_rate: float,
+    ultra_short_frac: float,
+    prob: Any,
+    min_trades: int,
+) -> Tuple[float, Dict[str, float], str]:
+    """
+    Weighted 0–100 score from multiple probation dimensions (heuristic, not optimized).
+    primary_failure_driver names the weakest component for attribution.
+    """
+    max_cons = max(int(getattr(prob, "max_consecutive_losses", 5) or 5), 1)
+    max_stop = max(float(getattr(prob, "max_stop_out_rate", 0.50) or 0.5), 0.05)
+    max_ultra = max(float(getattr(prob, "max_ultra_short_trade_fraction", 0.25) or 0.25), 0.05)
+    n = len(closed)
+
+    def clip(x: float, lo: float = 0.0, hi: float = 100.0) -> float:
+        return max(lo, min(hi, x))
+
+    pf_s = clip((pf - 0.88) / 0.32 * 100)
+    exp_s = clip(50.0 + exp * 400.0)
+    sor_s = clip((1.0 - stop_out_rate / max_stop) * 100.0)
+    cl_s = clip((1.0 - cons_losses / max_cons) * 100.0)
+    tr_s = clip(min(1.0, n / max(min_trades, 1)) * 100.0)
+    us_s = clip((1.0 - ultra_short_frac / max_ultra) * 100.0)
+    durs = get_trade_durations_sec(closed) if closed else []
+    if durs:
+        med = sorted(durs)[len(durs) // 2]
+        dur_s = clip(min(100.0, med / 180.0 * 80.0))
+    else:
+        dur_s = 55.0
+
+    weights = {
+        "profit_factor": 0.20,
+        "expectancy": 0.18,
+        "stop_out_rate": 0.14,
+        "consecutive_losses": 0.14,
+        "trade_sample": 0.12,
+        "ultra_short_churn": 0.12,
+        "duration_health": 0.10,
+    }
+    comp = {
+        "profit_factor": pf_s,
+        "expectancy": exp_s,
+        "stop_out_rate": sor_s,
+        "consecutive_losses": cl_s,
+        "trade_sample": tr_s,
+        "ultra_short_churn": us_s,
+        "duration_health": dur_s,
+    }
+    score = sum(weights[k] * comp[k] for k in weights)
+    worst = min(weights.keys(), key=lambda k: comp[k])
+    return round(score, 2), {k: round(comp[k], 2) for k in comp}, worst
+
+
+def _probation_attribution_from_driver(driver: str) -> str:
+    m = {
+        "profit_factor": "likely_poor_edge",
+        "expectancy": "likely_poor_edge",
+        "stop_out_rate": "likely_too_tight_protection",
+        "consecutive_losses": "likely_poor_edge",
+        "trade_sample": "mixed_or_unclear",
+        "ultra_short_churn": "likely_too_tight_protection",
+        "duration_health": "likely_too_tight_protection",
+    }
+    return m.get(driver, "mixed_or_unclear")
+
+
 def _consecutive_losses(pnls: List[float]) -> int:
     """Return max number of consecutive non-positive (loss or zero) trades from the end."""
     if not pnls:
@@ -204,16 +275,46 @@ def evaluate_probation(
         reasons.append("sample_or_runtime_not_reached")
         return PROBATION_STATUS_IN_PROGRESS, LIFECYCLE_DEMO_PROBATION, reasons, metrics_summary, None
 
-    # Success criteria
+    # Composite survival (timer path only; does not bypass fail-fast above)
+    use_comp = getattr(prob, "use_composite_survival_score", False)
+    if use_comp:
+        score, components, driver = _probation_composite_survival(
+            closed, float(pf or 0), float(exp or 0), cons_losses,
+            stop_out_rate, ultra_short_frac, prob, min_trades,
+        )
+        metrics_summary["probation_survival_score"] = score
+        metrics_summary["probation_survival_components"] = components
+        metrics_summary["probation_primary_failure_driver"] = driver
+        pass_s = float(getattr(prob, "probation_survival_pass_score", 58.0))
+        fail_s = float(getattr(prob, "probation_survival_fail_score", 38.0))
+        fr_comp = str(getattr(prob, "failure_reason_composite_survival", None) or "composite_survival_fail")
+        if score >= pass_s:
+            reasons.append("passed_composite_survival")
+            metrics_summary["probation_rejection_attribution"] = None
+            return PROBATION_STATUS_PASSED, LIFECYCLE_DEMO_PROBATION_PASSED, reasons, metrics_summary, None
+        if score < fail_s:
+            fail_reasons.append(f"composite_survival_score_{score}_below_{fail_s}")
+            metrics_summary["probation_rejection_attribution"] = _probation_attribution_from_driver(driver)
+            return (
+                PROBATION_STATUS_FAILED,
+                LIFECYCLE_DEMO_PROBATION_FAILED,
+                fail_reasons,
+                metrics_summary,
+                fr_comp,
+            )
+
+    # Legacy timer success criteria (or gray zone when composite enabled but score in [fail_s, pass_s))
     if pf < min_pf:
         fail_reasons.append("profit_factor_below_minimum")
     if exp < min_exp:
         fail_reasons.append("expectancy_below_minimum")
 
     if fail_reasons:
+        metrics_summary["probation_rejection_attribution"] = "likely_poor_edge"
         return PROBATION_STATUS_FAILED, LIFECYCLE_DEMO_PROBATION_FAILED, fail_reasons, metrics_summary, FAILURE_REASON_TIMER_EVALUATED
 
     reasons.append("passed")
+    metrics_summary["probation_rejection_attribution"] = None
     return PROBATION_STATUS_PASSED, LIFECYCLE_DEMO_PROBATION_PASSED, reasons, metrics_summary, None
 
 

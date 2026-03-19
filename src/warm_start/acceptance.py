@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 
 from src.config.config import Config, WarmStartConfig
+from src.warm_start.research_validation import research_layers_failed
 
 
 def _get_acceptance_config(config: Config) -> WarmStartConfig:
@@ -29,6 +30,8 @@ def passes_warm_start_seed_acceptance(
     fees_summary: float = 0.0,
     slippage_summary: float = 0.0,
     initial_equity: float = 10_000.0,
+    research_summary: Optional[Dict[str, Any]] = None,
+    family_diagnostics: Optional[Dict[str, Any]] = None,
 ) -> Tuple[bool, str, Dict[str, Any]]:
     """
     Evaluate replay metrics and duration stats against warm-start acceptance thresholds.
@@ -65,13 +68,17 @@ def passes_warm_start_seed_acceptance(
         "ultra_short_trade_fraction": round(ultra_short_fraction, 4),
         "fees_summary": fees_summary,
         "slippage_summary": slippage_summary,
+        "family_overfitting_diagnostics": family_diagnostics or {},
+        "research_validation": research_summary or {},
     }
 
     min_trade_count = int(getattr(warm, "min_replay_trade_count", 30))
     if closed_trade_count < min_trade_count:
+        checks["warm_start_rejection_attribution"] = "likely_poor_edge"
         return False, f"trade_count_below_min_{closed_trade_count}_<_{min_trade_count}", checks
 
     if getattr(warm, "require_profitable_seed", True) and total_pnl <= 0:
+        checks["warm_start_rejection_attribution"] = "likely_poor_edge"
         return False, "replay_not_profitable", checks
 
     min_wr = float(getattr(warm, "min_win_rate", 0.18))
@@ -127,6 +134,30 @@ def passes_warm_start_seed_acceptance(
         checks["tp1_hit_rate"] = tp1_hit_rate
         min_tp1 = float(getattr(warm, "min_tp1_hit_rate", 0.05))
         if tp1_hit_rate < min_tp1:
+            checks["warm_start_rejection_attribution"] = "likely_too_tight_protection"
             return False, f"tp1_hit_rate_below_min_{tp1_hit_rate:.2f}_<_{min_tp1}", checks
 
+    fam = family_diagnostics or {}
+    orisk = float(fam.get("overfitting_risk") or 0.0)
+    if getattr(warm, "reject_on_high_overfitting_risk", False):
+        mx = float(getattr(warm, "max_acceptable_overfitting_risk", 0.75))
+        if orisk > mx:
+            checks["warm_start_rejection_attribution"] = "likely_overfit"
+            return False, f"overfitting_risk_above_max_{orisk:.3f}_>_{mx}", checks
+
+    rs = research_summary or {}
+    if getattr(warm, "reject_on_research_validation_failure", True) and not rs.get("research_layers_skipped"):
+        failed = research_layers_failed(rs, warm)
+        if failed:
+            if "cost_sensitivity" in failed:
+                checks["warm_start_rejection_attribution"] = "likely_cost_fragile"
+            elif "regime" in failed:
+                checks["warm_start_rejection_attribution"] = "likely_regime_fragile"
+            elif "multi_window" in failed:
+                checks["warm_start_rejection_attribution"] = "likely_regime_fragile"
+            else:
+                checks["warm_start_rejection_attribution"] = "mixed_or_unclear"
+            return False, f"research_validation_failed_{'_'.join(failed)}", checks
+
+    checks["warm_start_rejection_attribution"] = None
     return True, "", checks

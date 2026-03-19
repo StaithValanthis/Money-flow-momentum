@@ -461,6 +461,36 @@ class WarmStartConfig(BaseModel):
         description="Min fraction of exits that must be TP1 (or better) before seed is accepted",
     )
 
+    # Research-quality validation (Demo warm-start only; optional extra backtests)
+    use_multi_window_validation: bool = Field(default=False, description="Evaluate winner across time windows")
+    validation_split_count: int = Field(default=3, ge=2, le=8)
+    min_validation_fold_positive_fraction: float = Field(
+        default=0.34, ge=0.0, le=1.0,
+        description="Min fraction of windows with positive return_pct",
+    )
+    min_validation_mean_return_pct: float = Field(default=-2.0, ge=-50.0, le=50.0)
+    use_cost_sensitivity_check: bool = Field(default=False, description="Backtest winner at multiple fee+slippage totals")
+    cost_scenarios_bps: list = Field(
+        default_factory=lambda: [8, 12, 16],
+        description="Total per-side bps (fee+slip) scenarios",
+    )
+    min_cost_scenarios_profitable: int = Field(default=2, ge=1, le=10)
+    use_regime_validation: bool = Field(default=False, description="Quarter-time regime windows")
+    regime_quarters_min_positive: int = Field(default=2, ge=1, le=4)
+    use_overfitting_diagnostics: bool = Field(
+        default=True,
+        description="Family-level selection-bias / deflated-sharpe-style proxies on candidate pool",
+    )
+    reject_on_high_overfitting_risk: bool = Field(
+        default=False,
+        description="If true, reject seed when family overfitting_risk exceeds threshold",
+    )
+    max_acceptable_overfitting_risk: float = Field(default=0.75, ge=0.0, le=1.0)
+    reject_on_research_validation_failure: bool = Field(
+        default=True,
+        description="If true, reject when multi-window / cost / regime checks fail (when those flags enabled)",
+    )
+
 
 class DemoProbationConfig(BaseModel):
     """Demo-only probation: historically passable seed must pass real Demo validation before trusted baseline."""
@@ -527,6 +557,17 @@ class DemoProbationConfig(BaseModel):
         ge=5,
         le=300,
         description="Max seconds to wait for flat confirmation after flatten attempts",
+    )
+
+    use_composite_survival_score: bool = Field(
+        default=False,
+        description="Blend PF/expectancy/stop-out/churn into survival score for timer-evaluated pass (fail-fast unchanged)",
+    )
+    probation_survival_pass_score: float = Field(default=58.0, ge=0.0, le=100.0)
+    probation_survival_fail_score: float = Field(default=38.0, ge=0.0, le=100.0)
+    failure_reason_composite_survival: str = Field(
+        default="composite_survival_fail",
+        description="failure_reason_type when composite score below fail threshold",
     )
 
 

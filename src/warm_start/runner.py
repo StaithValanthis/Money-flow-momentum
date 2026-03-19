@@ -45,6 +45,7 @@ from src.warm_start.candles import (
 from src.warm_start.strategy_replay import replay_strategy_from_candles
 from src.warm_start.candidate_search import run_warm_start_candidate_search
 from src.warm_start.acceptance import passes_warm_start_seed_acceptance
+from src.warm_start.research_validation import compute_family_overfitting_diagnostics
 from src.warm_start.checkpoint import (
     load_checkpoint,
     save_checkpoint,
@@ -362,6 +363,7 @@ def run_warm_start_calibration(
         best_rejection_reason_seen: Optional[str] = None
         # Small operator-friendly slice of the most promising rejected candidates.
         top_rejected_candidates_all: list[dict[str, Any]] = []
+        all_results_accum: list[dict[str, Any]] = []
         start_batch_index = 0
         symbols_sorted = sorted(candles_by_symbol.keys())
         cp = load_checkpoint(artifact_dir)
@@ -452,6 +454,7 @@ def run_warm_start_calibration(
             total_requested += batch_requested
             total_replayed += batch_replayed
             total_invalid += batch_invalid
+            all_results_accum.extend(all_results)
             result["batches_completed"] = batch_num + 1
             result["total_candidates_requested"] = total_requested
             result["total_candidates_evaluated"] = total_replayed
@@ -484,15 +487,26 @@ def run_warm_start_calibration(
                         log.warning("Warm-start re-backtest for acceptance failed: {}", e)
                         durations_sec = []
                     metrics = best.get("oos_metrics") or {}
+                    warm_ws = getattr(baseline_config, "warm_start", None)
+                    fam_diag = (
+                        compute_family_overfitting_diagnostics(all_results_accum, best)
+                        if warm_ws and getattr(warm_ws, "use_overfitting_diagnostics", True)
+                        else (search_meta.get("family_overfitting_diagnostics") or {})
+                    )
+                    research_sum = best.get("research_validation") or {}
                     accepted, rejection_reason, acceptance_checks = passes_warm_start_seed_acceptance(
                         metrics,
                         config,
                         durations_sec=durations_sec,
                         fees_summary=float(metrics.get("fees_summary") or 0),
                         slippage_summary=float(metrics.get("slippage_summary") or 0),
+                        research_summary=research_sum,
+                        family_diagnostics=fam_diag,
                     )
                     if rejection_reason:
                         best_rejection_reason_seen = rejection_reason
+                    result["family_overfitting_diagnostics"] = fam_diag
+                    result["winner_research_validation"] = research_sum
                     result["seed_acceptance_checks"] = acceptance_checks
                     result["ultra_short_trade_fraction"] = acceptance_checks.get("ultra_short_trade_fraction")
                     result["median_trade_duration_sec"] = acceptance_checks.get("median_trade_duration_sec")
@@ -676,13 +690,19 @@ def run_warm_start_calibration(
                     log.warning("Warm-start re-backtest for acceptance failed: {}", e)
                     durations_sec = []
                 metrics = best.get("oos_metrics") or {}
+                fam_diag = search_meta.get("family_overfitting_diagnostics") or {}
+                research_sum = best.get("research_validation") or {}
                 accepted, rejection_reason, acceptance_checks = passes_warm_start_seed_acceptance(
                     metrics,
                     config,
                     durations_sec=durations_sec,
                     fees_summary=float(metrics.get("fees_summary") or 0),
                     slippage_summary=float(metrics.get("slippage_summary") or 0),
+                    research_summary=research_sum,
+                    family_diagnostics=fam_diag,
                 )
+                result["family_overfitting_diagnostics"] = fam_diag
+                result["winner_research_validation"] = research_sum
                 result["seed_acceptance_checks"] = acceptance_checks
                 result["ultra_short_trade_fraction"] = acceptance_checks.get("ultra_short_trade_fraction")
                 result["median_trade_duration_sec"] = acceptance_checks.get("median_trade_duration_sec")

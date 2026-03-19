@@ -42,6 +42,11 @@ def _warm_start_fingerprint(config: Config, symbols_sorted: Optional[List[str]] 
         "min_replay_trade_count", "min_win_rate", "min_profit_factor", "min_payoff_ratio",
         "max_replay_drawdown", "min_median_trade_duration_sec", "ultra_short_duration_sec",
         "max_ultra_short_trade_fraction", "max_stop_out_rate", "max_consecutive_losses", "min_tp1_hit_rate",
+        "use_multi_window_validation", "validation_split_count", "use_cost_sensitivity_check",
+        "cost_scenarios_bps", "use_regime_validation", "regime_quarters_min_positive",
+        "use_overfitting_diagnostics", "reject_on_high_overfitting_risk", "max_acceptable_overfitting_risk",
+        "reject_on_research_validation_failure", "min_validation_fold_positive_fraction",
+        "min_cost_scenarios_profitable",
     ):
         if hasattr(warm, k):
             data[k] = getattr(warm, k)

@@ -20,6 +20,11 @@ from src.optimizer.candidate_selector import select_best_candidate
 from src.utils.logging import get_logger
 
 from src.warm_start.backtest_engine import run_backtest_on_candles
+from src.warm_start.research_validation import (
+    compute_family_overfitting_diagnostics,
+    deep_validate_winner,
+    merge_rejection_attribution,
+)
 
 log = get_logger(__name__)
 
@@ -70,6 +75,16 @@ def _infer_protection_diagnostic(metrics: dict[str, Any]) -> str:
         return "likely_poor_edge"
 
     return "mixed_or_unclear"
+
+
+def _rejected_candidate_attribution(reason_codes: List[str], protection_diagnostic: str) -> str:
+    rc = " ".join(str(x) for x in (reason_codes or [])).lower()
+    extra: List[str] = []
+    if "min_trade" in rc or "trade" in rc and "below" in rc:
+        extra.append("likely_poor_edge")
+    if "drawdown" in rc:
+        extra.append("likely_poor_edge")
+    return merge_rejection_attribution(protection_diagnostic, extra)
 
 
 def run_warm_start_candidate_search(
@@ -191,11 +206,66 @@ def run_warm_start_candidate_search(
         if total_pnl <= 0:
             best = None
 
+    warm = getattr(baseline_config, "warm_start", None)
+    family_diagnostics: Dict[str, Any] = {}
+    if warm and getattr(warm, "use_overfitting_diagnostics", True):
+        family_diagnostics = compute_family_overfitting_diagnostics(results, best)
+
+    research_summary: Dict[str, Any] = {}
+    if best:
+        winning_config = build_config_from_params(baseline_config, best["params"])
+        if winning_config:
+            any_layer = bool(
+                warm
+                and (
+                    getattr(warm, "use_multi_window_validation", False)
+                    or getattr(warm, "use_cost_sensitivity_check", False)
+                    or getattr(warm, "use_regime_validation", False)
+                )
+            )
+            if any_layer:
+                research_summary = deep_validate_winner(
+                    winning_config, baseline_config, candles_by_symbol
+                )
+            else:
+                research_summary = {
+                    "validation_passed": True,
+                    "cost_sensitivity_passed": True,
+                    "stability_score": 1.0,
+                    "research_layers_skipped": True,
+                    "note": "enable multi_window / cost / regime in warm_start for extra validation",
+                }
+            best["research_validation"] = research_summary
+
     top_n = 5
     top_rejected_candidates = sorted(
         [r for r in results if not r.get("guardrail_passed", False)],
         key=lambda r: -(float(r.get("objective_score") or 0.0)),
     )[:top_n]
+
+    top_rejected_payload: List[Dict[str, Any]] = []
+    for r in top_rejected_candidates:
+        om = r.get("oos_metrics") or {}
+        top_rejected_payload.append({
+            "config_id": r.get("config_id"),
+            "params": r.get("params"),
+            "protection_settings": r.get("protection_settings"),
+            "protection_diagnostic": r.get("protection_diagnostic"),
+            "oos_metrics": r.get("oos_metrics"),
+            "reason_codes": r.get("reason_codes"),
+            "objective_score": r.get("objective_score"),
+            "rejection_reason": "; ".join(r.get("reason_codes") or []) or "guardrail_failed",
+            "rejection_attribution": _rejected_candidate_attribution(
+                list(r.get("reason_codes") or []),
+                str(r.get("protection_diagnostic") or "mixed_or_unclear"),
+            ),
+            "validation_summary": {
+                "return_pct": round(float(om.get("return_pct") or 0), 4),
+                "profit_factor": round(float(om.get("profit_factor") or 0), 4),
+                "trade_count": int(om.get("trade_count") or 0),
+                "stop_out_rate": round(float(om.get("stop_out_rate") or 0), 4),
+            },
+        })
 
     no_trades_reason = None
     if replay_trade_counts and max(replay_trade_counts) == 0:
@@ -213,17 +283,7 @@ def run_warm_start_candidate_search(
         "candidate_count_requested": n_samples,
         "protection_search_bias": protection_search_bias,
         "prioritize_protection_search": prioritize_protection_search,
-        "top_rejected_candidates": [
-            {
-                "config_id": r.get("config_id"),
-                "params": r.get("params"),
-                "protection_settings": r.get("protection_settings"),
-                "protection_diagnostic": r.get("protection_diagnostic"),
-                "oos_metrics": r.get("oos_metrics"),
-                "reason_codes": r.get("reason_codes"),
-                "objective_score": r.get("objective_score"),
-            }
-            for r in top_rejected_candidates
-        ],
+        "family_overfitting_diagnostics": family_diagnostics,
+        "top_rejected_candidates": top_rejected_payload,
     }
     return best, results, meta
